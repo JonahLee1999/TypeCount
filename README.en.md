@@ -21,7 +21,7 @@ A small, native macOS menu bar app. See how much you type and which apps you wri
 
 ## Less interface, more focus
 
-The menu bar keeps a single icon footprint: the original symbol sits at the lower left, with a small count such as `1.9k` at the upper right. Choose a character, keystroke, or mouse-click badge, or show the icon alone. Hover for complete totals, or click for details. Closing the window keeps the app running in the menu bar.
+The menu bar keeps one fixed square icon footprint: the original symbol stays on the left, with a small count such as `1.9k` in the upper half of the space to its right. Choose characters, keystrokes, or mouse clicks, or show the icon alone. Hover for complete totals, or click for details. Closing the window keeps the app running in the menu bar.
 
 Use the **“输入统计 ˅”** dropdown at the top left to switch between **Typing Statistics** and **Keyboard & Mouse Activity**. It opens on Typing Statistics by default; both views share the selected date range. The current app interface is in Chinese.
 
@@ -81,11 +81,17 @@ The current local-development signing and notarization limitations still apply. 
 | Metric | Definition |
 | :--- | :--- |
 | Estimated characters | Chinese characters, English letters, punctuation, and emoji count by Swift `Character` (grapheme cluster); whitespace and line breaks are ignored |
-| New input | Counts accumulate; deleting text does not subtract, replacement counts new characters, and existing text is not counted when focus changes |
+| New input | Observed additions accumulate; deletion does not subtract and existing text is not counted on focus changes. Unobserved delete/retype operations or replacement with identical text can be missed |
 | Keystrokes | Text keys, Delete, Return, Tab, and key repeats; excludes Cmd / Ctrl shortcuts, navigation keys, function keys, and standalone modifiers |
 | Physical keys | Frequency by US QWERTY key position; this does not infer the characters typed |
 
-Counts remain **estimates**: input-method composition, autocorrection, paste operations, and application-specific text interfaces can introduce errors. Where controls expose composition markers, TypeCount waits for committed text. Unsupported editors, terminals, remote desktops, very large documents, or fast focus changes may prevent character counting.
+**Keep using system Pinyin or Shuangpin.** TypeCount first uses the control's public marked-text range and composition-session start/end notifications, then delays the final read after a session ends. Repeated focus notifications for the same field and candidate clicks retain the baseline. No input-method replacement, input-method component, or additional permission is required.
+
+When system Pinyin or Shuangpin does not expose commit status, suspected Latin preedit is held temporarily to avoid adding the five temporary characters in `nihao` to the two committed characters in `你好`. With unknown status, mixed English input may appear only after newly entered trailing whitespace or a confirmed commit; unconfirmed input can be missed.
+
+Counts remain **estimates**. Bounded text comparison reduces whole-span overcounting when edits occur at separate positions. Complex edits across large passages use a conservative lower bound when the comparison budget is exceeded, so some additions may be missed. Composition, autocorrection, paste operations, and application-specific text interfaces still prevent a guarantee of complete, precise counts across all apps.
+
+**Existing history is preserved.** Older records contain totals only, so previous overcounts cannot be reconstructed. The app does not automatically recalculate or clear them; the new logic applies only to input recorded after upgrading.
 
 **WeChat 4.1.11:** the tested version does not expose its input area through Accessibility, so TypeCount can record keystrokes but cannot reliably count its characters. Confirmed unreadable apps show **“仅按键”** (keystrokes only); unconfirmed text access shows **“—”**. Neither means that you typed zero characters.
 
@@ -97,7 +103,7 @@ Statistics stay on your Mac. The app does not save raw input, key sequences, cli
 
 Network access is limited to manual update checks, automatic checks you opt into, and update downloads you confirm, using GitHub and its release-asset services. There is no telemetry, and Sparkle system profiling is off by default. Everyday input counting works offline.
 
-To estimate characters, it temporarily holds the focused editing control's text in memory. This text is cleared when focus changes, monitoring pauses or stops, an app is excluded, or protected input is detected. System secure input and recognizable password fields are skipped. Custom password fields that do not identify themselves cannot be detected universally; exclude the corresponding app when needed.
+To estimate characters, it temporarily holds the focused editing control's text in memory. This text is cleared when the actual field or app changes, monitoring pauses or stops, an app is excluded, or protected input is detected. Raw text and pending preedit are not saved to disk. System secure input and recognizable password fields are skipped. Custom password fields that do not identify themselves cannot be detected universally; exclude the corresponding app when needed.
 
 ```text
 ~/Library/Application Support/TypeCount/
@@ -109,7 +115,7 @@ Keyboard and mouse distributions retain the latest 365 days and start when that 
 
 ## Built to stay in the background
 
-- Text reads follow input, focus changes, and text notifications; idle editors are not repeatedly scanned.
+- Text reads follow input, focus changes, and text notifications. Delayed reads after composition ends are bounded; there is no background idle polling.
 - Dashboard updates are combined at 500 ms intervals while visible. Hiding, minimizing, or closing the window stops list rebuilding; closing releases the main window.
 - Statistics are saved in background batches every 5 seconds, with the latest data saved on normal exit.
 - Mouse monitoring covers clicks, not high-frequency pointer movement. Text reads and the icon cache have explicit limits.

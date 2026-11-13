@@ -5,24 +5,27 @@ import AppKit
 enum MenuBarIcon {
     static func image(badge: String?, paused: Bool) -> NSImage {
         let label = paused ? "Ⅱ" : badge
-        let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
+        let image = NSImage(size: NSSize(width: 22, height: 18), flipped: false) { _ in
             NSColor.black.setFill()
             if let label {
-                // A shorter cursor leaves a dedicated upper-right corner.
-                // The left text strokes still reach up beside the counter.
+                // Reserve separate horizontal regions: mark on the left,
+                // counter to its right. Their vertical ranges overlap so the
+                // number sits beside the mark instead of above its roof.
                 drawBadgedMark()
                 let text = label as NSString
-                let systemFont = NSFont.systemFont(ofSize: 6.5, weight: .semibold)
-                let font = text.size(withAttributes: [.font: systemFont]).width <= 15
-                    ? systemFont : NSFont.monospacedSystemFont(ofSize: 6, weight: .semibold)
+                let fonts = [NSFont.systemFont(ofSize: 6.5, weight: .semibold),
+                             NSFont.monospacedSystemFont(ofSize: 6.25, weight: .semibold),
+                             NSFont.monospacedSystemFont(ofSize: 6, weight: .semibold)]
+                let font = fonts.first { text.size(withAttributes: [.font: $0, .kern: -0.25]).width <= 14.25 } ?? fonts[2]
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: font,
+                    .kern: -0.25,
                     .foregroundColor: NSColor.black
                 ]
                 let size = text.size(withAttributes: attributes)
-                text.draw(at: NSPoint(x: 19.5 - size.width, y: 18.5 - size.height), withAttributes: attributes)
+                text.draw(at: NSPoint(x: 21.5 - size.width, y: 15 - size.height), withAttributes: attributes)
             } else {
-                drawMark(origin: NSPoint(x: 2, y: 4), scale: 1.2)
+                drawMark(origin: NSPoint(x: 3, y: 2.5), scale: 1.2)
             }
             return true
         }
@@ -32,12 +35,12 @@ enum MenuBarIcon {
     }
 
     private static func drawBadgedMark() {
-        NSRect(x: 1, y: 10.5, width: 7.5, height: 1.4).fill()
-        NSRect(x: 1, y: 6.3, width: 7.5, height: 1.4).fill()
-        NSRect(x: 1, y: 2, width: 5, height: 1.4).fill()
-        NSRect(x: 11.1, y: 1, width: 1.4, height: 7.5).fill()
-        NSRect(x: 9.7, y: 1, width: 4.2, height: 1.4).fill()
-        NSRect(x: 9.7, y: 7.1, width: 4.2, height: 1.4).fill()
+        NSRect(x: 0.5, y: 12.2, width: 3.2, height: 1.3).fill()
+        NSRect(x: 0.5, y: 7.8, width: 3.2, height: 1.3).fill()
+        NSRect(x: 0.5, y: 3.4, width: 2.4, height: 1.3).fill()
+        NSRect(x: 5.2, y: 3.2, width: 1.1, height: 6.7).fill()
+        NSRect(x: 4.3, y: 3.2, width: 2.8, height: 1.3).fill()
+        NSRect(x: 4.3, y: 8.6, width: 2.8, height: 1.3).fill()
     }
 
     private static func drawMark(origin: NSPoint, scale: CGFloat) {

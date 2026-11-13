@@ -29,11 +29,15 @@ final class InputMonitor {
     private var applicationElement: AXUIElement?
     private var focusedElement: AXUIElement?
     private var accumulator = TextInputAccumulator()
+    private var compositionActivity = InputCompositionActivity()
+    private let markingBegan = NSAccessibility.Notification.NSAccessibilityTextInputMarkingSessionBegan.rawValue
+    private let markingEnded = NSAccessibility.Notification.NSAccessibilityTextInputMarkingSessionEnded.rawValue
     private var pendingKeys: [(code: Int, date: Date, verifiedSafe: Bool)] = []
     private var fieldVerifiedSafe = false
-    private var lastTypingAt: Date?
+    private var lastTypingAt: Date? { compositionActivity.lastTypingAt }
     private var suppressUntil = Date.distantPast
     private var unsupportedRetryAt = Date.distantPast
+    private var reconciliationAttempt = 0
     private var isRunning = false
     private var sessionActive = true
 
@@ -238,20 +242,21 @@ final class InputMonitor {
         guard type == .keyDown, canRecordActivity else { return }
         let now = Date()
         if !event.flags.intersection([.maskCommand, .maskControl]).isEmpty {
-            lastTypingAt = nil
+            compositionActivity.reset()
             suppressUntil = now.addingTimeInterval(0.7)
             requestSample(after: 120)
             return
         }
         let key = Int(event.getIntegerValueField(.keyboardEventKeycode))
         guard Self.isTypingKey(key) else {
-            lastTypingAt = nil
+            if key == 53 { accumulator.discardPending() }
+            if key == 53 || !compositionActivity.hasActiveComposition(at: now) { compositionActivity.reset() }
             requestSample(after: 80)
             return
         }
         if pendingKeys.count < 256 { pendingKeys.append((key, now, fieldVerifiedSafe)) }
         if key == 48 { fieldVerifiedSafe = false } // Tab can move straight into a protected field.
-        lastTypingAt = now
+        compositionActivity.recordKeyboard(at: now)
         requestSample(after: 80)
     }
 
@@ -272,11 +277,14 @@ final class InputMonitor {
     private func mouseClicked(left: Bool) {
         guard canRecordActivity else { return }
         activity?.recordMouse(left: left)
-        // Moving focus may reveal a different editable child. Do not count the
-        // text already present in the newly selected field.
-        clearText()
+        // A candidate click can commit an IME session without changing the
+        // editing field. Keep that baseline until the next read verifies focus.
+        let now = Date()
+        if !left || !compositionActivity.recordCandidateClick(at: now) {
+            compositionActivity.reset()
+            suppressUntil = Date().addingTimeInterval(0.2)
+        }
         unsupportedRetryAt = .distantPast
-        suppressUntil = Date().addingTimeInterval(0.2)
         requestSample(after: 100)
     }
 
@@ -322,7 +330,8 @@ final class InputMonitor {
         }, &created) == .success, let created else { return }
         observer = created
         let context = Unmanaged.passUnretained(self).toOpaque()
-        for name in [kAXFocusedUIElementChangedNotification, kAXFocusedWindowChangedNotification] {
+        for name in [kAXFocusedUIElementChangedNotification as String, kAXFocusedWindowChangedNotification as String,
+                     markingBegan, markingEnded] {
             _ = AXObserverAddNotification(created, element, name as CFString, context)
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
@@ -330,12 +339,38 @@ final class InputMonitor {
 
     private func accessibilityChanged(element: AXUIElement, notification: String) {
         guard isRunning else { return }
-        if notification == kAXValueChangedNotification {
+        if notification == markingBegan || notification == markingEnded {
+            guard canRecordActivity else { return }
+            guard let focusedElement,
+                  CFEqual(element, focusedElement) || applicationElement.map({ CFEqual(element, $0) }) == true else { return }
+            let fromApplication = applicationElement.map { CFEqual(element, $0) } == true
+            let now = Date()
+            if notification == markingBegan {
+                guard compositionActivity.markingBegan(fromApplication: fromApplication, at: now) else { return }
+                requestSample(after: 40)
+            } else {
+                guard compositionActivity.markingEnded(at: now) else { return }
+                // End also covers cancellation. Read the final value after the
+                // editor has completed its replacement. It authorizes a read,
+                // not a commit: an unknown Latin snapshot remains unverified.
+                sampleWork?.cancel()
+                sampleWork = nil
+                requestSample(after: 80)
+            }
+        } else if notification == kAXValueChangedNotification {
             // Incoming messages and unrelated UI changes cannot trigger counting.
-            guard let lastTypingAt, Date().timeIntervalSince(lastTypingAt) <= 1.5 else { return }
+            let now = Date()
+            compositionActivity.expire(at: now)
+            guard compositionActivity.allowsTextRead(at: now) else {
+                // Do not read unsolicited changes, and do not retain a stale
+                // baseline that would charge those changes to the next key.
+                invalidateRawBaseline()
+                return
+            }
             requestSample(after: 40)
         } else {
-            clearText()
+            // Duplicate focus/window notifications must not erase the baseline.
+            // sample() compares actual AX element identity before changing it.
             unsupportedRetryAt = .distantPast
             requestSample(after: 40)
         }
@@ -345,11 +380,15 @@ final class InputMonitor {
         guard let observer else { return }
         if let observedElement, CFEqual(observedElement, element) { return }
         if let observedElement {
-            _ = AXObserverRemoveNotification(observer, observedElement, kAXValueChangedNotification as CFString)
+            for name in [kAXValueChangedNotification as String, markingBegan, markingEnded] {
+                _ = AXObserverRemoveNotification(observer, observedElement, name as CFString)
+            }
         }
         observedElement = element
-        _ = AXObserverAddNotification(observer, element, kAXValueChangedNotification as CFString,
-                                      Unmanaged.passUnretained(self).toOpaque())
+        for name in [kAXValueChangedNotification as String, markingBegan, markingEnded] {
+            _ = AXObserverAddNotification(observer, element, name as CFString,
+                                          Unmanaged.passUnretained(self).toOpaque())
+        }
     }
 
     private func requestSample(after milliseconds: Int) {
@@ -425,30 +464,49 @@ final class InputMonitor {
             fieldVerifiedSafe = true
             store.setTextReadability(bundleID: bundleID, readability: .available)
             let now = Date()
-            let canCount = lastTypingAt.map { now.timeIntervalSince($0) <= 1.5 } ?? false
+            compositionActivity.expire(at: now)
+            let canCount = compositionActivity.allowsTextRead(at: now)
             let composition: TextInputAccumulator.Composition
+            let snapshotMarking: InputCompositionActivity.SnapshotMarking
             switch snapshot.composition {
-            case .marked: composition = .marked
-            case .notMarked: composition = .committed
-            case .unknown: composition = .unknown
+            case .marked:
+                composition = .marked
+                snapshotMarking = .marked
+            case .notMarked:
+                composition = .committed
+                snapshotMarking = .notMarked
+            case .unknown:
+                composition = compositionActivity.overridesUnknownAsMarked(at: now) ? .marked : .unknown
+                snapshotMarking = .unknown
             }
             let count = accumulator.observe(text: snapshot.text, composition: composition,
-                                            sameField: sameField, allowCounting: canCount && now >= suppressUntil)
+                                            sameField: sameField, allowCounting: canCount && now >= suppressUntil,
+                                            deferUnverifiedLatin: SystemInputSource.currentIsSystemPinyin())
+            compositionActivity.didReadSnapshot(snapshotMarking, hasPendingDraft: accumulator.hasPendingVisibleText, at: now)
             if count > 0, let lastTypingAt {
                 store.record(bundleID: bundleID, name: app.localizedName ?? bundleID, characters: count, at: lastTypingAt)
             }
-            setStatus("正在统计 · 字符为文本变化估算")
-            // One bounded tail check catches delayed input-method commits; no
-            // repeating timer remains once typing has stopped.
-            if canCount, reconciliationWork == nil, reconciliationScheduledFor != lastTypingAt {
+            setStatus(accumulator.hasPendingVisibleText
+                ? "正在确认输入法提交 · 字符可能延迟显示"
+                : "正在统计 · 字符为文本变化估算")
+            // At most three short tail checks for pending composition. Plain
+            // committed input needs only one, and there is no idle polling.
+            if reconciliationScheduledFor != lastTypingAt {
                 reconciliationScheduledFor = lastTypingAt
+                reconciliationAttempt = 0
+            }
+            let settling = compositionActivity.isSettling(at: now)
+            let maximumAttempts = settling ? 3 : 1
+            if canCount, reconciliationWork == nil, reconciliationAttempt < maximumAttempts {
+                let delay = [120, 350, 800][reconciliationAttempt]
+                reconciliationAttempt += 1
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
                     self.reconciliationWork = nil
                     self.requestSample(after: 0)
                 }
                 reconciliationWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350), execute: work)
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delay), execute: work)
             }
         }
     }
@@ -467,6 +525,13 @@ final class InputMonitor {
         focusedElement = nil
         fieldVerifiedSafe = false
         accumulator.reset()
+        compositionActivity.reset()
+    }
+
+    private func invalidateRawBaseline() {
+        fieldVerifiedSafe = false
+        accumulator.reset()
+        compositionActivity.reset()
     }
 
     private func clearText() {
@@ -478,8 +543,8 @@ final class InputMonitor {
         reconciliationWork?.cancel()
         reconciliationWork = nil
         reconciliationScheduledFor = nil
+        reconciliationAttempt = 0
         pendingKeys.removeAll(keepingCapacity: true)
-        lastTypingAt = nil
         clearBaseline()
     }
 
@@ -487,7 +552,9 @@ final class InputMonitor {
         clearText()
         if let observer {
             if let observedElement {
-                _ = AXObserverRemoveNotification(observer, observedElement, kAXValueChangedNotification as CFString)
+                for name in [kAXValueChangedNotification as String, markingBegan, markingEnded] {
+                    _ = AXObserverRemoveNotification(observer, observedElement, name as CFString)
+                }
             }
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
