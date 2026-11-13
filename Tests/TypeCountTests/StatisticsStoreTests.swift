@@ -158,7 +158,7 @@ final class StatisticsStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testVisibleTypingBurstPublishesOneCoalescedSnapshot() async throws {
+    func testVisibleTypingBurstPublishesOneCoalescedSnapshot() async {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) },
@@ -166,14 +166,21 @@ final class StatisticsStoreTests: XCTestCase {
         store.setDashboardVisible(true)
         var dashboardChanges = 0
         let subscription = store.objectWillChange.sink { dashboardChanges += 1 }
+        let snapshotPublished = expectation(description: "The coalesced snapshot contains the entire typing burst")
+        let snapshotSubscription = store.$snapshot.dropFirst().sink { snapshot in
+            if snapshot.totalCharacters == 1_000 { snapshotPublished.fulfill() }
+        }
         for _ in 0..<1_000 {
             store.record(bundleID: "app.one", name: "One", characters: 1, at: date(13))
         }
         XCTAssertEqual(dashboardChanges, 0)
-        try await Task.sleep(for: .milliseconds(100))
+        // Wait for the actual publication; a loaded CI runner may resume either
+        // sleeping task first, even when the snapshot's deadline was earlier.
+        let result = await XCTWaiter.fulfillment(of: [snapshotPublished], timeout: 5)
+        XCTAssertEqual(result, .completed)
         XCTAssertEqual(dashboardChanges, 1)
         XCTAssertEqual(store.snapshot.totalCharacters, 1_000)
-        withExtendedLifetime(subscription) {}
+        withExtendedLifetime((subscription, snapshotSubscription)) {}
     }
 
     @MainActor
