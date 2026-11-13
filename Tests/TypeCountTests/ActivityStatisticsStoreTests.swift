@@ -18,6 +18,15 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         FileManager.default.temporaryDirectory.appendingPathComponent("ActivityTests-\(UUID().uuidString)")
     }
 
+    private func legacyArchiveData(extraDayFields: [String: Any] = [:]) throws -> Data {
+        var hours = Array(repeating: 0, count: 24)
+        hours[8] = 2
+        var day: [String: Any] = ["day": "2026-11-13", "totalKeystrokes": 2, "leftClicks": 3,
+                                  "rightClicks": 4, "hours": hours, "keys": ["12": 2]]
+        day.merge(extraDayFields) { _, new in new }
+        return try JSONSerialization.data(withJSONObject: ["version": 1, "days": [day]], options: [.sortedKeys])
+    }
+
     @MainActor
     func testPeriodsHoursAndKeysAreActualNewAggregates() async {
         let path = directory()
@@ -75,6 +84,7 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         store.recordKey(12, at: date(13, hour: 8))
         store.recordMouse(left: true, at: date(13))
         store.recordMouse(left: false, at: date(13))
+        store.recordPointerActivity(distanceMeters: 18.75, scrollPoints: 3_200.5, at: date(13))
         store.flush()
         XCTAssertNil(store.persistenceError)
         let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
@@ -85,7 +95,8 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["version", "days"])
         let days = try XCTUnwrap(object["days"] as? [[String: Any]])
-        XCTAssertEqual(Set(try XCTUnwrap(days.first).keys), ["day", "totalKeystrokes", "leftClicks", "rightClicks", "hours", "keys"])
+        XCTAssertEqual(Set(try XCTUnwrap(days.first).keys),
+                       ["day", "totalKeystrokes", "leftClicks", "rightClicks", "hours", "keys", "mouseDistanceMeters", "scrollPoints"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: path.appendingPathComponent("stats.json").path))
     }
 
@@ -98,7 +109,9 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let store = ActivityStatisticsStore(directory: path, calendar: cal, now: { current })
         let start = cal.startOfDay(for: current)
         for offset in 0..<400 {
-            store.recordKey(0, at: cal.date(byAdding: .day, value: -offset, to: start)!)
+            let date = cal.date(byAdding: .day, value: -offset, to: start)!
+            store.recordKey(0, at: date)
+            store.recordPointerActivity(distanceMeters: 1.25, scrollPoints: 2.5, at: date)
         }
         store.recordKey(-1, at: current)
         store.recordKey(256, at: current)
@@ -108,10 +121,14 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual((object["days"] as? [Any])?.count, 365)
         XCTAssertEqual(store.snapshot(for: .month).totalKeystrokes, 30)
+        XCTAssertEqual(store.snapshot(for: .month).mouseDistanceMeters, 37.5)
+        XCTAssertEqual(store.snapshot(for: .month).scrollPoints, 75)
         XCTAssertEqual(store.todayKeystrokes, 1)
         current = cal.date(byAdding: .day, value: 1, to: current)!
         XCTAssertEqual(store.todayKeystrokes, 0)
         XCTAssertEqual(store.todayMouseClicks, 0)
+        XCTAssertEqual(store.snapshot(for: .today).mouseDistanceMeters, 0)
+        XCTAssertEqual(store.snapshot(for: .today).scrollPoints, 0)
         store.recordKey(2, at: current)
         XCTAssertEqual(store.todayKeystrokes, 1)
     }
@@ -136,8 +153,11 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let demo = ActivityStatisticsStore(directory: demoPath, calendar: calendar(), now: { self.date(13) }, demo: true)
         let snapshot = demo.snapshot(for: .today)
         XCTAssertGreaterThan(snapshot.totalKeystrokes, 0)
+        XCTAssertEqual(snapshot.mouseDistanceMeters, 708.8, accuracy: 0.000_001)
+        XCTAssertEqual(snapshot.scrollPoints, 23_100)
         demo.recordKey(0, at: date(13))
         demo.recordMouse(left: true, at: date(13))
+        demo.recordPointerActivity(distanceMeters: 100, scrollPoints: 200, at: date(13))
         demo.flush()
         XCTAssertEqual(demo.snapshot(for: .today), snapshot)
         XCTAssertFalse(FileManager.default.fileExists(atPath: demoPath.path))
@@ -153,6 +173,8 @@ final class ActivityStatisticsStoreTests: XCTestCase {
             store.recordKey(49, at: date(13, hour: 20))
             store.recordMouse(left: true, at: date(13))
             store.recordMouse(left: false, at: date(1))
+            store.recordPointerActivity(distanceMeters: 100, scrollPoints: 1_000, at: date(1))
+            store.recordPointerActivity(distanceMeters: 20, scrollPoints: 200, at: date(13))
             store.setVisible(visible)
             var menuUpdates = 0
             let token = store.menuBarUpdates.sink { menuUpdates += 1 }
@@ -182,6 +204,7 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         store.setVisible(true)
         store.recordKey(0, at: date(13))
         store.recordMouse(left: false, at: date(13))
+        store.recordPointerActivity(distanceMeters: 77.7, scrollPoints: 1_234, at: date(13))
         try await Task.sleep(for: .milliseconds(40))
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { release.signal() }
         XCTAssertTrue(store.resetStatistics())
@@ -189,6 +212,7 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         XCTAssertEqual(empty.snapshot(for: .month), .empty)
         store.recordKey(12, at: date(13, hour: 8))
         store.recordMouse(left: true, at: date(13))
+        store.recordPointerActivity(distanceMeters: 1.25, scrollPoints: 22.5, at: date(13))
         try await Task.sleep(for: .milliseconds(100))
         let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
         let snapshot = restored.snapshot(for: .month)
@@ -197,6 +221,8 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.hours[8].keystrokes, 1)
         XCTAssertEqual(snapshot.leftClicks, 1)
         XCTAssertEqual(snapshot.rightClicks, 0)
+        XCTAssertEqual(snapshot.mouseDistanceMeters, 1.25)
+        XCTAssertEqual(snapshot.scrollPoints, 22.5)
         XCTAssertNil(store.persistenceError)
         store.flush()
     }
@@ -209,6 +235,7 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
         store.recordKey(7, at: date(13, hour: 9))
         store.recordMouse(left: false, at: date(13))
+        store.recordPointerActivity(distanceMeters: 12.5, scrollPoints: 125, at: date(13))
         let previous = store.snapshot(for: .month)
         XCTAssertFalse(store.resetStatistics())
         XCTAssertTrue(try XCTUnwrap(store.persistenceError).contains("重置活动统计失败"))
@@ -247,5 +274,150 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         let isolatedDemo = ActivityStatisticsStore(directory: absent, demo: true)
         XCTAssertTrue(isolatedDemo.resetStatistics())
         XCTAssertFalse(FileManager.default.fileExists(atPath: absent.path))
+    }
+
+    @MainActor
+    func testPointerPeriodsUseLocalDaysAndRoundTripWithoutInventingKeysOrClicks() async throws {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        store.recordPointerActivity(distanceMeters: 10.25, scrollPoints: 100.5, at: date(13, hour: 0))
+        store.recordPointerActivity(distanceMeters: 20.5, scrollPoints: 200.25, at: date(12, hour: 23))
+        store.recordPointerActivity(distanceMeters: 30.75, scrollPoints: 300.25, at: date(6))
+        store.recordPointerActivity(distanceMeters: 99, scrollPoints: 999, at: date(14))
+        XCTAssertEqual(store.snapshot(for: .today).mouseDistanceMeters, 10.25)
+        XCTAssertEqual(store.snapshot(for: .today).scrollPoints, 100.5)
+        XCTAssertEqual(store.snapshot(for: .week).mouseDistanceMeters, 30.75)
+        XCTAssertEqual(store.snapshot(for: .week).scrollPoints, 300.75)
+        XCTAssertEqual(store.snapshot(for: .month).mouseDistanceMeters, 61.5)
+        XCTAssertEqual(store.snapshot(for: .month).scrollPoints, 601)
+        let month = store.snapshot(for: .month)
+        XCTAssertEqual(month.totalKeystrokes, 0)
+        XCTAssertEqual(month.leftClicks, 0)
+        XCTAssertEqual(month.rightClicks, 0)
+        XCTAssertTrue(month.keys.isEmpty)
+        XCTAssertTrue(month.hours.allSatisfy { $0.keystrokes == 0 })
+        store.flush()
+        XCTAssertNil(store.persistenceError)
+        let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        for period in StatisticsPeriod.allCases { XCTAssertEqual(restored.snapshot(for: period), store.snapshot(for: period)) }
+    }
+
+    @MainActor
+    func testLegacyVersionOneDefaultsOnlyMissingPointerFieldsToZero() async throws {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        let file = path.appendingPathComponent("activity.json")
+        let original = try legacyArchiveData(extraDayFields: ["futureField": "ignored"])
+        try original.write(to: file)
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        XCTAssertNil(store.persistenceError)
+        let legacy = store.snapshot(for: .today)
+        XCTAssertEqual(legacy.totalKeystrokes, 2)
+        XCTAssertEqual(legacy.leftClicks, 3)
+        XCTAssertEqual(legacy.rightClicks, 4)
+        XCTAssertEqual(legacy.mouseDistanceMeters, 0)
+        XCTAssertEqual(legacy.scrollPoints, 0)
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        store.recordPointerActivity(distanceMeters: 2.5, scrollPoints: 6.25, at: date(13))
+        store.flush()
+        let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        XCTAssertNil(restored.persistenceError)
+        XCTAssertEqual(restored.snapshot(for: .today).totalKeystrokes, 2)
+        XCTAssertEqual(restored.snapshot(for: .today).mouseDistanceMeters, 2.5)
+        XCTAssertEqual(restored.snapshot(for: .today).scrollPoints, 6.25)
+    }
+
+    @MainActor
+    func testPointerInputsValidateIndependentlyAndSaturateAtFiniteTotals() async throws {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        store.recordPointerActivity(distanceMeters: -.infinity, scrollPoints: .nan, at: date(13))
+        store.recordPointerActivity(distanceMeters: -1, scrollPoints: -2, at: date(13))
+        store.recordPointerActivity(distanceMeters: 0, scrollPoints: 0, at: date(13))
+        XCTAssertEqual(store.snapshot(for: .today), .empty)
+        store.flush()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
+        store.recordPointerActivity(distanceMeters: 1.25, scrollPoints: .infinity, at: date(13))
+        store.recordPointerActivity(distanceMeters: .nan, scrollPoints: 2.5, at: date(13))
+        XCTAssertEqual(store.snapshot(for: .today).mouseDistanceMeters, 1.25)
+        XCTAssertEqual(store.snapshot(for: .today).scrollPoints, 2.5)
+        for day in [12, 13, 13] {
+            store.recordPointerActivity(distanceMeters: .greatestFiniteMagnitude,
+                                        scrollPoints: .greatestFiniteMagnitude, at: date(day))
+        }
+        for period in StatisticsPeriod.allCases {
+            XCTAssertEqual(store.snapshot(for: period).mouseDistanceMeters, .greatestFiniteMagnitude)
+            XCTAssertEqual(store.snapshot(for: period).scrollPoints, .greatestFiniteMagnitude)
+        }
+        store.flush()
+        XCTAssertNil(store.persistenceError)
+        let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(restored.snapshot(for: .month), store.snapshot(for: .month))
+    }
+
+    @MainActor
+    func testPointerBurstCoalescesVisibleUIWithoutPublishingMenuUpdates() async {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        var menuUpdates = 0
+        var viewUpdates = 0
+        let published = expectation(description: "A visible pointer burst publishes one coalesced dashboard update")
+        var awaitingVisibleUpdate = false
+        let menuToken = store.menuBarUpdates.sink { menuUpdates += 1 }
+        let viewToken = store.objectWillChange.sink {
+            viewUpdates += 1
+            if awaitingVisibleUpdate { published.fulfill() }
+        }
+        for _ in 0..<1_000 { store.recordPointerActivity(distanceMeters: 0.5, scrollPoints: 2, at: date(13)) }
+        XCTAssertEqual(viewUpdates, 0)
+        XCTAssertEqual(menuUpdates, 0)
+        store.setVisible(true)
+        let initialViewUpdates = viewUpdates
+        awaitingVisibleUpdate = true
+        for _ in 0..<100 { store.recordPointerActivity(distanceMeters: 0.25, scrollPoints: 3, at: date(13)) }
+        XCTAssertEqual(viewUpdates, initialViewUpdates)
+        let result = await XCTWaiter.fulfillment(of: [published], timeout: 5)
+        awaitingVisibleUpdate = false
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(viewUpdates, initialViewUpdates + 1)
+        XCTAssertEqual(menuUpdates, 0)
+        XCTAssertEqual(store.snapshot(for: .today).mouseDistanceMeters, 525)
+        XCTAssertEqual(store.snapshot(for: .today).scrollPoints, 2_300)
+        withExtendedLifetime((menuToken, viewToken)) {}
+    }
+
+    @MainActor
+    func testMalformedPointerFieldsProtectTheOriginalArchive() async throws {
+        let invalidFields: [[String: Any]] = [
+            ["mouseDistanceMeters": -0.5],
+            ["scrollPoints": -1],
+            ["mouseDistanceMeters": "NaN"],
+            ["scrollPoints": NSNull()]
+        ]
+        var damaged = try invalidFields.map { try legacyArchiveData(extraDayFields: $0) }
+        let finite = try legacyArchiveData(extraDayFields: ["mouseDistanceMeters": 1])
+        let nonfinite = String(decoding: finite, as: UTF8.self)
+            .replacingOccurrences(of: "\"mouseDistanceMeters\":1", with: "\"mouseDistanceMeters\":1e309")
+        XCTAssertNotEqual(Data(nonfinite.utf8), finite)
+        damaged.append(Data(nonfinite.utf8))
+        for original in damaged {
+            let path = directory()
+            defer { try? FileManager.default.removeItem(at: path) }
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            let file = path.appendingPathComponent("activity.json")
+            try original.write(to: file)
+            let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+            XCTAssertNotNil(store.persistenceError)
+            store.recordPointerActivity(distanceMeters: 3, scrollPoints: 5, at: date(13))
+            store.flush()
+            XCTAssertFalse(store.resetStatistics())
+            XCTAssertEqual(store.snapshot(for: .today).mouseDistanceMeters, 3)
+            XCTAssertEqual(store.snapshot(for: .today).scrollPoints, 5)
+            XCTAssertEqual(try Data(contentsOf: file), original)
+        }
     }
 }

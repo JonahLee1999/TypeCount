@@ -20,6 +20,19 @@ struct ActivitySnapshot: Equatable, Sendable {
     let rightClicks: Int
     let hours: [HourActivity]
     let keys: [KeyActivity]
+    let mouseDistanceMeters: Double
+    let scrollPoints: Double
+
+    init(totalKeystrokes: Int, leftClicks: Int, rightClicks: Int, hours: [HourActivity], keys: [KeyActivity],
+         mouseDistanceMeters: Double = 0, scrollPoints: Double = 0) {
+        self.totalKeystrokes = totalKeystrokes
+        self.leftClicks = leftClicks
+        self.rightClicks = rightClicks
+        self.hours = hours
+        self.keys = keys
+        self.mouseDistanceMeters = mouseDistanceMeters
+        self.scrollPoints = scrollPoints
+    }
 
     static let empty = ActivitySnapshot(totalKeystrokes: 0, leftClicks: 0, rightClicks: 0,
                                        hours: (0..<24).map { HourActivity(hour: $0, keystrokes: 0) }, keys: [])
@@ -104,6 +117,24 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
         changed()
     }
 
+    /// Accepts only unordered numeric totals, never pointer positions or scroll events.
+    func recordPointerActivity(distanceMeters: Double, scrollPoints: Double, at date: Date = Date()) {
+        guard !isDemo else { return }
+        let distance = distanceMeters.isFinite && distanceMeters > 0 ? distanceMeters : 0
+        let scroll = scrollPoints.isFinite && scrollPoints > 0 ? scrollPoints : 0
+        guard distance > 0 || scroll > 0 else { return }
+        updateDay()
+        guard let key = acceptedDay(for: date) else { return }
+        var day = days[key] ?? ActivityDay(day: key)
+        let nextDistance = Self.add(day.mouseDistanceMeters, distance)
+        let nextScroll = Self.add(day.scrollPoints, scroll)
+        guard nextDistance != day.mouseDistanceMeters || nextScroll != day.scrollPoints else { return }
+        day.mouseDistanceMeters = nextDistance
+        day.scrollPoints = nextScroll
+        days[key] = day
+        changed(updateMenu: false)
+    }
+
     func setVisible(_ visible: Bool) {
         guard self.visible != visible else { return }
         self.visible = visible
@@ -120,12 +151,16 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
         var total = 0
         var left = 0
         var right = 0
+        var distance = 0.0
+        var scroll = 0.0
         var hours = Array(repeating: 0, count: 24)
         var keys: [Int: Int] = [:]
         for (id, day) in days where id >= startID && id <= currentDay {
             total = Self.add(total, day.totalKeystrokes)
             left = Self.add(left, day.leftClicks)
             right = Self.add(right, day.rightClicks)
+            distance = Self.add(distance, day.mouseDistanceMeters)
+            scroll = Self.add(scroll, day.scrollPoints)
             for hour in 0..<24 { hours[hour] = Self.add(hours[hour], day.hours[hour]) }
             for (rawCode, count) in day.keys {
                 guard let code = Int(rawCode) else { continue }
@@ -137,7 +172,8 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
             hours: hours.enumerated().map { HourActivity(hour: $0.offset, keystrokes: $0.element) },
             keys: keys.map { KeyActivity(keyCode: $0.key, count: $0.value) }.sorted {
                 $0.count == $1.count ? $0.keyCode < $1.keyCode : $0.count > $1.count
-            }
+            },
+            mouseDistanceMeters: distance, scrollPoints: scroll
         )
     }
 
@@ -225,9 +261,9 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
         return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
-    private func changed() {
+    private func changed(updateMenu: Bool = true) {
         markDirty()
-        menuBarUpdates.send()
+        if updateMenu { menuBarUpdates.send() }
         scheduleNotification()
     }
 
@@ -299,6 +335,8 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
     private func valid(_ day: ActivityDay) -> Bool {
         guard day.day.count == 10, day.hours.count == 24,
               day.totalKeystrokes >= 0, day.leftClicks >= 0, day.rightClicks >= 0,
+              day.mouseDistanceMeters.isFinite, day.mouseDistanceMeters >= 0,
+              day.scrollPoints.isFinite, day.scrollPoints >= 0,
               day.hours.allSatisfy({ $0 >= 0 }), day.keys.count <= 256,
               day.keys.allSatisfy({ Int($0.key).map { (0...255).contains($0) } == true && $0.value > 0 }) else { return false }
         let parts = day.day.split(separator: "-").compactMap { Int($0) }
@@ -321,6 +359,8 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
                         "49": day.totalKeystrokes - day.totalKeystrokes / 3 - day.totalKeystrokes / 4]
             day.leftClicks = 180 + offset * 17
             day.rightClicks = 9 + offset
+            day.mouseDistanceMeters = max(0, 708.8 - Double(offset) * 63.4)
+            day.scrollPoints = max(0, 23_100 - Double(offset) * 1_270)
             days[id] = day
         }
     }
@@ -328,6 +368,11 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
     private static func add(_ lhs: Int, _ rhs: Int) -> Int {
         let result = lhs.addingReportingOverflow(rhs)
         return result.overflow ? Int.max : result.partialValue
+    }
+
+    private static func add(_ lhs: Double, _ rhs: Double) -> Double {
+        let result = lhs + rhs
+        return result.isFinite ? result : .greatestFiniteMagnitude
     }
 }
 
@@ -338,6 +383,32 @@ private struct ActivityDay: Codable, Sendable {
     var rightClicks = 0
     var hours = Array(repeating: 0, count: 24)
     var keys: [String: Int] = [:]
+    var mouseDistanceMeters = 0.0
+    var scrollPoints = 0.0
+
+    init(day: String) { self.day = day }
+
+    private enum CodingKeys: String, CodingKey {
+        case day, totalKeystrokes, leftClicks, rightClicks, hours, keys, mouseDistanceMeters, scrollPoints
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        day = try values.decode(String.self, forKey: .day)
+        totalKeystrokes = try values.decode(Int.self, forKey: .totalKeystrokes)
+        leftClicks = try values.decode(Int.self, forKey: .leftClicks)
+        rightClicks = try values.decode(Int.self, forKey: .rightClicks)
+        hours = try values.decode([Int].self, forKey: .hours)
+        keys = try values.decode([String: Int].self, forKey: .keys)
+        // Missing fields belong to older version-1 archives. Present but invalid
+        // values must throw instead of silently erasing an unreadable new metric.
+        if values.contains(.mouseDistanceMeters) {
+            mouseDistanceMeters = try values.decode(Double.self, forKey: .mouseDistanceMeters)
+        }
+        if values.contains(.scrollPoints) {
+            scrollPoints = try values.decode(Double.self, forKey: .scrollPoints)
+        }
+    }
 }
 
 private struct ActivityArchive: Codable, Sendable {

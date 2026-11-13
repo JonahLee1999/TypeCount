@@ -44,7 +44,7 @@ Use the **“输入统计 ˅”** dropdown at the top left to switch between **T
 | :--- | :--- |
 | Icon with count badge | One fixed icon footprint for estimated characters, keystrokes, mouse clicks, or the icon alone; full totals remain in the tooltip |
 | App breakdown | Estimated new characters and keystrokes, with clear labels when text cannot be read |
-| Keyboard & mouse activity | Left/right clicks, 24-hour keyboard distribution, and frequently used physical keys |
+| Keyboard & mouse activity | Left/right clicks, estimated pointer travel, scrolling amount, hourly keyboard activity, and frequently used physical keys |
 | Date ranges & trends | Today, last 7 days, or last 30 days; an expandable 7-day character chart |
 | Controls | Pause, exclude apps, export typing statistics as CSV, and optionally launch at login |
 | Native & local | SwiftUI / AppKit, system light/dark appearance, no account, and statistics processed and stored locally |
@@ -84,6 +84,8 @@ The current local-development signing and notarization limitations still apply. 
 | New input | Observed additions accumulate; deletion does not subtract and existing text is not counted on focus changes. Unobserved delete/retype operations or replacement with identical text can be missed |
 | Keystrokes | Text keys, Delete, Return, Tab, and key repeats; excludes Cmd / Ctrl shortcuts, navigation keys, function keys, and standalone modifiers |
 | Physical keys | Frequency by US QWERTY key position; this does not infer the characters typed |
+| Mouse movement | Estimated screen-pointer travel in m; not the physical distance moved by your mouse or hand. Cross-display transitions and abnormal jumps are skipped |
+| Scrolling amount | Absolute horizontal and vertical system scroll deltas combined, in px / kpx, including trackpad momentum; not wheel-turn counts or actual page displacement |
 
 **Keep using system Pinyin or Shuangpin.** TypeCount first uses the control's public marked-text range and composition-session start/end notifications, then delays the final read after a session ends. Repeated focus notifications for the same field and candidate clicks retain the baseline. No input-method replacement, input-method component, or additional permission is required.
 
@@ -93,7 +95,7 @@ Counts remain **estimates**. Bounded text comparison reduces whole-span overcoun
 
 **Existing history is preserved.** Older records contain totals only, so previous overcounts cannot be reconstructed. The app does not automatically recalculate or clear them; the new logic applies only to input recorded after upgrading.
 
-To start over, choose **Settings → Local Data → Reset Statistics… (设置 → 本机数据 → 重置统计数据…)**, then confirm **Reset and Start Counting Again (重置并重新统计)**. This cannot be undone: it clears all dates of character, keystroke, and per-app history, plus mouse clicks, hourly activity, and key distributions. Permissions, launch-at-login, display, exclusions, and pause settings stay intact. You can first export typing history as CSV; it does not include keyboard/mouse distributions. Installing or updating the app does not reset statistics.
+To start over, choose **Settings → Local Data → Reset Statistics… (设置 → 本机数据 → 重置统计数据…)**, then confirm **Reset and Start Counting Again (重置并重新统计)**. This cannot be undone: it clears all dates of character, keystroke, and per-app history, plus mouse clicks, movement distance, scrolling amount, hourly activity, and key distributions. Permissions, launch-at-login, display, exclusions, and pause settings stay intact. You can first export typing history as CSV; it does not include keyboard/mouse activity. Installing or updating the app does not reset statistics.
 
 **WeChat 4.1.11:** the tested version does not expose its input area through Accessibility, so TypeCount can record keystrokes but cannot reliably count its characters. Confirmed unreadable apps show **“仅按键”** (keystrokes only); unconfirmed text access shows **“—”**. Neither means that you typed zero characters.
 
@@ -110,17 +112,18 @@ To estimate characters, it temporarily holds the focused editing control's text 
 ```text
 ~/Library/Application Support/TypeCount/
 ├── stats.json       # Daily typing counts grouped by app
-└── activity.json    # Click totals, unordered key counts, and hourly buckets
+└── activity.json    # Click, movement and scroll totals, unordered key counts, hourly buckets
 ```
 
-Keyboard and mouse distributions retain the latest 365 days and start when that feature is enabled; older typing totals are not turned into invented key history. CSV exports contain dates and app names, so review them before sharing.
+Keyboard and mouse activity retains the latest 365 days. Movement distance and scrolling amount start when those features are introduced; older key or click counts are not converted into invented history. Pointer coordinates are used transiently in memory to calculate distance; positions and paths are not saved. CSV exports include only typing statistics, with dates, app names, and counts, so review them before sharing.
 
 ## Built to stay in the background
 
 - Text reads follow input, focus changes, and text notifications. Delayed reads after composition ends are bounded; there is no background idle polling.
 - Dashboard updates are combined at 500 ms intervals while visible. Hiding, minimizing, or closing the window stops list rebuilding; closing releases the main window.
 - Statistics are saved in background batches every 5 seconds, with the latest data saved on normal exit.
-- Mouse monitoring covers clicks, not high-frequency pointer movement. Text reads and the icon cache have explicit limits.
+- Movement, dragging, and scroll events perform only constant-time numeric accumulation, delivered in batches about once a second. Display geometry is cached until the display configuration changes; no idle polling is added.
+- Individual movement events do not refresh the interface or write to disk. Text reads and the icon cache have explicit limits.
 
 Resource use depends on the foreground app, document size, and input method. Use `scripts/measure-runtime.py` to measure CPU and resident memory on your own Mac.
 

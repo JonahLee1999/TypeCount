@@ -15,6 +15,12 @@ final class InputMonitor {
     private var eventTap: CFMachPort?
     private var eventSource: CFRunLoopSource?
     private var mouseMonitor: Any?
+    private var displayObserver: NSObjectProtocol?
+    private var pointerDisplays: [PointerDisplayGeometry] = []
+    private var pointerAccumulator = PointerActivityAccumulator()
+    private var pointerFlushWork: DispatchWorkItem?
+    private var pointerBucket: DateInterval?
+    private var pointerBucketDate: Date?
     private var maintenanceTimer: Timer?
     private var sampleWork: DispatchWorkItem?
     private var reconciliationWork: DispatchWorkItem?
@@ -56,6 +62,12 @@ final class InputMonitor {
     func start() {
         guard !isRunning, !store.isDemo else { return }
         isRunning = true
+        refreshPointerDisplays()
+        displayObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPointerDisplays() }
+        }
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             let left = event.type == .leftMouseDown
             MainActor.assumeIsolated { self?.mouseClicked(left: left) }
@@ -109,6 +121,8 @@ final class InputMonitor {
         permissionRefreshTask = nil
         if let applicationObserver { NotificationCenter.default.removeObserver(applicationObserver) }
         applicationObserver = nil
+        if let displayObserver { NotificationCenter.default.removeObserver(displayObserver) }
+        displayObserver = nil
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
@@ -189,7 +203,9 @@ final class InputMonitor {
             return
         }
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let mask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        let types: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDragged, .rightMouseDragged,
+                                    .otherMouseDragged, .scrollWheel]
+        let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
             eventsOfInterest: mask,
@@ -199,7 +215,7 @@ final class InputMonitor {
                         // Source is attached only to the main run loop. This path
                         // only batches numbers; AX IPC and disk work are deferred.
                         Unmanaged<InputMonitor>.fromOpaque(context).takeUnretainedValue()
-                            .handleKey(type: type, event: event)
+                            .handleEvent(type: type, event: event)
                     }
                 }
                 return Unmanaged.passUnretained(event)
@@ -217,6 +233,7 @@ final class InputMonitor {
     }
 
     private func removeEventTap(clearCapability: Bool = true) {
+        endPointerSession()
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
             CFMachPortInvalidate(eventTap)
@@ -231,12 +248,18 @@ final class InputMonitor {
         if store.keyboardMonitoringAvailable != available { store.keyboardMonitoringAvailable = available }
     }
 
-    private func handleKey(type: CGEventType, event: CGEvent) {
+    private func handleEvent(type: CGEventType, event: CGEvent) {
         guard isRunning else { return }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            endPointerSession()
             if store.inputPermissionGranted || store.accessibilityPermissionGranted, let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
+            return
+        }
+        if type == .scrollWheel || type == .mouseMoved || type == .leftMouseDragged ||
+            type == .rightMouseDragged || type == .otherMouseDragged {
+            handlePointer(type: type, event: event)
             return
         }
         guard type == .keyDown, canRecordActivity else { return }
@@ -272,6 +295,64 @@ final class InputMonitor {
             return false
         }
         return true
+    }
+
+    private func refreshPointerDisplays() {
+        endPointerSession()
+        pointerDisplays = NSScreen.screens.compactMap { screen in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            let display = CGDirectDisplayID(id.uint32Value)
+            let bounds = CGDisplayBounds(display)
+            guard !bounds.isEmpty else { return nil }
+            var size = CGDisplayScreenSize(display)
+            let rotation = Int(CGDisplayRotation(display).rounded()) % 180
+            if rotation == 90 { size = CGSize(width: size.height, height: size.width) }
+            return PointerDisplayGeometry(bounds: bounds, physicalMillimeters: size)
+        }
+    }
+
+    private func handlePointer(type: CGEventType, event: CGEvent) {
+        // This hot path never reads accessibility text, queries displays/apps,
+        // publishes a view update or performs disk I/O. Batch at most once/sec.
+        guard activity != nil, sessionActive, !store.isPaused, store.keyboardMonitoringAvailable,
+              let app, let bundleID = app.bundleIdentifier, !store.excludedBundleIDs.contains(bundleID),
+              !IsSecureEventInputEnabled() else {
+            endPointerSession()
+            return
+        }
+        let date = Date()
+        if let bucket = pointerBucket, date < bucket.start || date >= bucket.end { flushPointerActivity() }
+        if pointerBucket == nil {
+            pointerBucket = Calendar.current.dateInterval(of: .day, for: date)
+            pointerBucketDate = date
+        }
+        if type == .scrollWheel {
+            pointerAccumulator.recordScroll(
+                horizontal: Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)),
+                vertical: Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)))
+        } else {
+            pointerAccumulator.recordMovement(to: event.location, displays: pointerDisplays)
+        }
+        guard pointerFlushWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.flushPointerActivity() }
+        pointerFlushWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(1), execute: work)
+    }
+
+    private func flushPointerActivity() {
+        pointerFlushWork?.cancel()
+        pointerFlushWork = nil
+        let totals = pointerAccumulator.takePending()
+        if !totals.isEmpty, let date = pointerBucketDate {
+            activity?.recordPointerActivity(distanceMeters: totals.distanceMeters, scrollPoints: totals.scrollPoints, at: date)
+        }
+        pointerBucket = nil
+        pointerBucketDate = nil
+    }
+
+    private func endPointerSession() {
+        flushPointerActivity()
+        pointerAccumulator.reset()
     }
 
     private func mouseClicked(left: Bool) {
@@ -549,6 +630,7 @@ final class InputMonitor {
     }
 
     private func detachApplication() {
+        endPointerSession()
         clearText()
         if let observer {
             if let observedElement {

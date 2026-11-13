@@ -401,7 +401,7 @@ struct DashboardView: View {
         } message: {
             Text(store.isDemo
                  ? "演示数据，仅清空示例。不会影响真实统计或任何设置。"
-                 : "将清空所有日期的估算字符、按键、各 App 记录，以及点击、小时和键位分布，从零开始。权限、开机自启、显示、排除和暂停设置会保留。历史无法恢复；输入历史可先导出 CSV。")
+                : "将清空所有日期的估算字符、按键、各 App 记录，以及点击、移动、滚动、小时和键位分布，从零开始。权限、开机自启、显示、排除和暂停设置会保留。历史无法恢复；输入历史可先导出 CSV。")
         }
         .onAppear { launchAtLogin.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

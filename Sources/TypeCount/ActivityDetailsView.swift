@@ -59,6 +59,22 @@ struct ActivityDetailsView: View {
             }
             .padding(20)
             Divider()
+            HStack(spacing: 18) {
+                pointerMetric(
+                    "鼠标移动",
+                    value: PointerActivityFormatting.mouseDistance(activity.mouseDistanceMeters),
+                    symbol: "arrow.up.left.and.arrow.down.right",
+                    detail: "由指针移动量换算的估算距离，受屏幕缩放、设备和系统设置影响，不代表鼠标在桌面上的实际行程。"
+                )
+                pointerMetric(
+                    "滚动量",
+                    value: PointerActivityFormatting.scrollPixels(activity.scrollPoints),
+                    symbol: "arrow.up.and.down",
+                    detail: "单位为系统滚动像素（px），累计横向与纵向的绝对滚动量，包含触控板和惯性滚动；不是滚动次数，也不是页面实际位移。"
+                )
+            }
+            .padding(.horizontal, 20).padding(.vertical, 12)
+            Divider()
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("24 小时键盘分布").font(.system(size: 12, weight: .medium))
@@ -103,7 +119,7 @@ struct ActivityDetailsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 5) {
                 Text("按 US QWERTY 物理键位标注，代表键位，不代表上屏字符。")
-                Text("键鼠分布从此版本开始记录，旧历史不回填。")
+                Text("移动距离与滚动量从升级后开始记录，旧历史不回填。")
             }
             .font(.system(size: 11)).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,6 +137,25 @@ struct ActivityDetailsView: View {
                 .lineLimit(1).minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pointerMetric(_ title: String, value: String, symbol: String, detail: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium)).foregroundStyle(.blue)
+                .frame(width: 28, height: 28)
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 18)).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(detail)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(detail)
     }
 
     private func hourlyChart(_ hours: [HourActivity]) -> some View {
