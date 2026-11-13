@@ -38,6 +38,7 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
     private let now: () -> Date
     private let fileURL: URL
     private let writer: ActivityAggregateWriter
+    private let checkpointInterval: Duration
     private var days: [String: ActivityDay] = [:]
     private var currentDay = ""
     private var currentInterval: DateInterval?
@@ -47,6 +48,7 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
     private var pendingCheckpoint: Task<Void, Never>?
     private var revision: UInt64 = 0
     private var persistedRevision: UInt64 = 0
+    private var persistenceGeneration: UInt64 = 0
     private var dirty = false
     private var persistenceBlocked = false
     var isVisible: Bool { visible }
@@ -63,14 +65,16 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
     }
 
     init(directory: URL? = nil, calendar: Calendar = .current,
-         now: @escaping () -> Date = Date.init, demo: Bool = false) {
+         now: @escaping () -> Date = Date.init, demo: Bool = false,
+         checkpointInterval: Duration = .seconds(5), persistenceQueue: DispatchQueue? = nil) {
         let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("TypeCount", isDirectory: true)
         self.calendar = calendar
         self.now = now
         self.isDemo = demo
         self.fileURL = directory.appendingPathComponent("activity.json")
-        self.writer = ActivityAggregateWriter(directory: directory)
+        self.writer = ActivityAggregateWriter(directory: directory, queue: persistenceQueue)
+        self.checkpointInterval = checkpointInterval
         initializeDay()
         if demo { seedDemo() } else { load() }
     }
@@ -143,13 +147,49 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
         pendingCheckpoint?.cancel()
         pendingCheckpoint = nil
         guard !isDemo, !persistenceBlocked, dirty || revision > persistedRevision else { return }
+        persistenceGeneration &+= 1
         updateDay()
         let error = writer.writeSynchronously(payload())
         persistenceError = error
         if error == nil {
             persistedRevision = revision
             dirty = false
+        } else {
+            dirty = true
         }
+    }
+
+    /// Drains earlier checkpoints and commits an empty archive before discarding memory.
+    @discardableResult
+    func resetStatistics() -> Bool {
+        pendingCheckpoint?.cancel()
+        pendingCheckpoint = nil
+        pendingNotification?.cancel()
+        pendingNotification = nil
+        persistenceGeneration &+= 1
+
+        guard !persistenceBlocked else {
+            persistenceError = "无法重置活动统计：本地统计文件无法读取，原文件和本次内存统计均已保留。"
+            if visible { objectWillChange.send() }
+            return false
+        }
+        if !isDemo, let error = writer.writeSynchronously(ActivityArchive(version: 1, days: [])) {
+            persistenceError = "重置活动统计失败，现有统计已保留，可恢复保存后重试。\(error)"
+            dirty = true
+            scheduleCheckpoint()
+            if visible { objectWillChange.send() }
+            return false
+        }
+
+        days.removeAll()
+        initializeDay()
+        revision &+= 1
+        persistedRevision = revision
+        dirty = false
+        persistenceError = nil
+        menuBarUpdates.send()
+        if visible { objectWillChange.send() }
+        return true
     }
 
     private func initializeDay() {
@@ -209,9 +249,11 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
 
     private func scheduleCheckpoint() {
         guard !isDemo, !persistenceBlocked, pendingCheckpoint == nil else { return }
+        let generation = persistenceGeneration
+        let interval = checkpointInterval
         pendingCheckpoint = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
+            do { try await Task.sleep(for: interval) } catch { return }
+            guard let self, !Task.isCancelled, self.persistenceGeneration == generation else { return }
             self.pendingCheckpoint = nil
             guard self.dirty else { return }
             let revision = self.revision
@@ -219,7 +261,8 @@ final class ActivityStatisticsStore: @preconcurrency ObservableObject {
             self.dirty = false
             self.writer.enqueue(payload) { [weak self] error in
                 Task { @MainActor [weak self] in
-                    guard let self, revision >= self.persistedRevision else { return }
+                    guard let self, self.persistenceGeneration == generation,
+                          revision >= self.persistedRevision else { return }
                     self.persistenceError = error
                     if error == nil { self.persistedRevision = revision }
                     else { self.dirty = true; self.scheduleCheckpoint() }
@@ -308,9 +351,12 @@ private enum ActivityArchiveError: Error { case invalid }
 /// payloads cross the queue boundary; no observed store state does.
 private final class ActivityAggregateWriter: @unchecked Sendable {
     private let directory: URL
-    private let queue = DispatchQueue(label: "com.jonah.TypeCount.activity-writer", qos: .utility)
+    private let queue: DispatchQueue
 
-    init(directory: URL) { self.directory = directory }
+    init(directory: URL, queue: DispatchQueue? = nil) {
+        self.directory = directory
+        self.queue = queue ?? DispatchQueue(label: "com.jonah.TypeCount.activity-writer", qos: .utility)
+    }
 
     func enqueue(_ payload: ActivityArchive, completion: @escaping @Sendable (String?) -> Void) {
         queue.async { completion(self.write(payload)) }

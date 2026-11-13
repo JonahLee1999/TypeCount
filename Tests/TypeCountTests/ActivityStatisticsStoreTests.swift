@@ -142,4 +142,110 @@ final class ActivityStatisticsStoreTests: XCTestCase {
         XCTAssertEqual(demo.snapshot(for: .today), snapshot)
         XCTAssertFalse(FileManager.default.fileExists(atPath: demoPath.path))
     }
+
+    @MainActor
+    func testResetClearsEveryDistributionWhenHiddenOrVisible() async throws {
+        for visible in [false, true] {
+            let path = directory()
+            defer { try? FileManager.default.removeItem(at: path) }
+            let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+            store.recordKey(12, at: date(1, hour: 8))
+            store.recordKey(49, at: date(13, hour: 20))
+            store.recordMouse(left: true, at: date(13))
+            store.recordMouse(left: false, at: date(1))
+            store.setVisible(visible)
+            var menuUpdates = 0
+            let token = store.menuBarUpdates.sink { menuUpdates += 1 }
+            XCTAssertTrue(store.resetStatistics())
+            XCTAssertEqual(store.isVisible, visible)
+            XCTAssertEqual(store.todayKeystrokes, 0)
+            XCTAssertEqual(store.todayMouseClicks, 0)
+            XCTAssertEqual(menuUpdates, 1)
+            for period in StatisticsPeriod.allCases { XCTAssertEqual(store.snapshot(for: period), .empty) }
+            let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+            XCTAssertEqual(restored.snapshot(for: .month), .empty)
+            let attributes = try FileManager.default.attributesOfItem(atPath: path.appendingPathComponent("activity.json").path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+            withExtendedLifetime(token) {}
+        }
+    }
+
+    @MainActor
+    func testResetFencesQueuedCheckpointBeforeNewInputAndRelaunch() async throws {
+        let path = directory()
+        let queue = DispatchQueue(label: "ActivityStatisticsStoreTests.blocked-writer")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { release.wait() }
+        defer { release.signal(); try? FileManager.default.removeItem(at: path) }
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) },
+                                            checkpointInterval: .milliseconds(1), persistenceQueue: queue)
+        store.setVisible(true)
+        store.recordKey(0, at: date(13))
+        store.recordMouse(left: false, at: date(13))
+        try await Task.sleep(for: .milliseconds(40))
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { release.signal() }
+        XCTAssertTrue(store.resetStatistics())
+        let empty = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(empty.snapshot(for: .month), .empty)
+        store.recordKey(12, at: date(13, hour: 8))
+        store.recordMouse(left: true, at: date(13))
+        try await Task.sleep(for: .milliseconds(100))
+        let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        let snapshot = restored.snapshot(for: .month)
+        XCTAssertEqual(snapshot.totalKeystrokes, 1)
+        XCTAssertEqual(snapshot.keys, [KeyActivity(keyCode: 12, count: 1)])
+        XCTAssertEqual(snapshot.hours[8].keystrokes, 1)
+        XCTAssertEqual(snapshot.leftClicks, 1)
+        XCTAssertEqual(snapshot.rightClicks, 0)
+        XCTAssertNil(store.persistenceError)
+        store.flush()
+    }
+
+    @MainActor
+    func testFailedResetPreservesCountsAndCanRecover() async throws {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try Data("directory is temporarily unavailable".utf8).write(to: path)
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        store.recordKey(7, at: date(13, hour: 9))
+        store.recordMouse(left: false, at: date(13))
+        let previous = store.snapshot(for: .month)
+        XCTAssertFalse(store.resetStatistics())
+        XCTAssertTrue(try XCTUnwrap(store.persistenceError).contains("重置活动统计失败"))
+        XCTAssertEqual(store.snapshot(for: .month), previous)
+        try FileManager.default.removeItem(at: path)
+        store.flush()
+        XCTAssertNil(store.persistenceError)
+        let restored = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(restored.snapshot(for: .month), previous)
+        XCTAssertTrue(store.resetStatistics())
+        XCTAssertEqual(store.snapshot(for: .month), .empty)
+    }
+
+    @MainActor
+    func testResetProtectsCorruptArchiveAndDemoNeverCreatesOrReplacesFiles() async throws {
+        let path = directory()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        let file = path.appendingPathComponent("activity.json")
+        let original = Data("unreadable original activity".utf8)
+        try original.write(to: file)
+        let store = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) })
+        store.recordKey(0, at: date(13))
+        XCTAssertFalse(store.resetStatistics())
+        XCTAssertEqual(store.todayKeystrokes, 1)
+        XCTAssertNotNil(store.persistenceError)
+        XCTAssertEqual(try Data(contentsOf: file), original)
+
+        let demo = ActivityStatisticsStore(directory: path, calendar: calendar(), now: { self.date(13) }, demo: true)
+        XCTAssertGreaterThan(demo.todayKeystrokes, 0)
+        XCTAssertTrue(demo.resetStatistics())
+        XCTAssertEqual(demo.snapshot(for: .month), .empty)
+        demo.flush()
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        let absent = directory()
+        let isolatedDemo = ActivityStatisticsStore(directory: absent, demo: true)
+        XCTAssertTrue(isolatedDemo.resetStatistics())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: absent.path))
+    }
 }

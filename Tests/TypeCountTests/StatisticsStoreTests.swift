@@ -257,4 +257,137 @@ final class StatisticsStoreTests: XCTestCase {
         store.setDashboardVisible(true)
         XCTAssertEqual(store.snapshot.totalCharacters, 10)
     }
+
+    @MainActor
+    func testResetClearsHiddenHistoryAndPreservesSettingsAndPermissions() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        store.record(bundleID: "app.old", name: "Old", characters: 40, keystrokes: 80, at: date(1))
+        store.record(bundleID: "app.today", name: "Today", characters: 7, keystrokes: 13, at: date(13))
+        store.selectedPeriod = .month
+        store.setDashboardVisible(true)
+        XCTAssertEqual(store.snapshot.totalCharacters, 47)
+        store.setDashboardVisible(false)
+        store.isPaused = true
+        store.setExcluded("app.excluded", excluded: true)
+        store.inputPermissionGranted = true
+        store.keyboardMonitoringAvailable = true
+        store.accessibilityPermissionGranted = true
+        store.monitorStatus = "监测中"
+        var menuUpdates = 0
+        let token = store.menuBarUpdates.sink { menuUpdates += 1 }
+
+        XCTAssertTrue(store.resetStatistics())
+        XCTAssertNil(store.persistenceError)
+        XCTAssertEqual(store.todayCharacters, 0)
+        XCTAssertEqual(store.todayKeystrokes, 0)
+        XCTAssertEqual(store.snapshot, .empty, "A previously visible hidden snapshot must not retain old apps or chart values")
+        XCTAssertEqual(menuUpdates, 1)
+        XCTAssertTrue(store.isPaused)
+        XCTAssertEqual(store.excludedBundleIDs, ["app.excluded"])
+        XCTAssertEqual(store.selectedPeriod, .month)
+        XCTAssertTrue(store.inputPermissionGranted)
+        XCTAssertTrue(store.keyboardMonitoringAvailable)
+        XCTAssertTrue(store.accessibilityPermissionGranted)
+        XCTAssertEqual(store.monitorStatus, "监测中")
+        XCTAssertEqual(store.exportCSV().components(separatedBy: "\r\n").filter { !$0.isEmpty }.count, 1)
+        store.setDashboardVisible(true)
+        XCTAssertEqual(store.snapshot.totalCharacters, 0)
+        XCTAssertEqual(store.snapshot.totalKeystrokes, 0)
+        XCTAssertTrue(store.snapshot.applications.isEmpty)
+        XCTAssertTrue(store.snapshot.days.allSatisfy { $0.characters == 0 })
+        let restored = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(restored.todayCharacters, 0)
+        XCTAssertTrue(restored.isPaused)
+        XCTAssertEqual(restored.excludedBundleIDs, ["app.excluded"])
+        let file = directory.appendingPathComponent("stats.json")
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        withExtendedLifetime(token) {}
+    }
+
+    @MainActor
+    func testResetDrainsQueuedCheckpointAndCannotReviveOldData() async throws {
+        let directory = temporaryDirectory()
+        let queue = DispatchQueue(label: "StatisticsStoreTests.blocked-writer")
+        let release = DispatchSemaphore(value: 0)
+        queue.async { release.wait() }
+        defer { release.signal(); try? FileManager.default.removeItem(at: directory) }
+        let store = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) },
+                                    saveInterval: .milliseconds(1), snapshotInterval: .milliseconds(20), persistenceQueue: queue)
+        store.setDashboardVisible(true)
+        store.record(bundleID: "app.old", name: "Old", characters: 99, keystrokes: 123, at: date(13))
+        try await Task.sleep(for: .milliseconds(40)) // The checkpoint is queued behind the blocked writer.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { release.signal() }
+        XCTAssertTrue(store.resetStatistics())
+        XCTAssertEqual(store.snapshot.totalCharacters, 0)
+        XCTAssertTrue(store.snapshot.applications.isEmpty)
+        let empty = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(empty.todayCharacters, 0, "Returning success must mean the empty archive is already durable")
+        store.record(bundleID: "app.new", name: "New", characters: 2, keystrokes: 3, at: date(13))
+        try await Task.sleep(for: .milliseconds(100)) // Deliver old completions and the new checkpoint.
+        let restored = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        restored.setDashboardVisible(true)
+        XCTAssertEqual(restored.todayCharacters, 2)
+        XCTAssertEqual(restored.todayKeystrokes, 3)
+        XCTAssertEqual(restored.snapshot.applications.map(\.id), ["app.new"])
+        XCTAssertEqual(store.snapshot.totalCharacters, 2)
+        XCTAssertNil(store.persistenceError)
+        store.flush()
+    }
+
+    @MainActor
+    func testFailedResetKeepsMemoryAndCanSaveAfterFilesystemRecovers() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("directory is temporarily unavailable".utf8).write(to: directory)
+        let store = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        store.record(bundleID: "app.keep", name: "Keep", characters: 11, keystrokes: 17, at: date(13))
+        store.setDashboardVisible(true)
+        let previous = store.snapshot
+        XCTAssertFalse(store.resetStatistics())
+        XCTAssertTrue(try XCTUnwrap(store.persistenceError).contains("重置统计失败"))
+        XCTAssertEqual(store.snapshot, previous)
+        XCTAssertEqual(store.todayCharacters, 11)
+        XCTAssertTrue(store.exportCSV().contains("app.keep"))
+        try FileManager.default.removeItem(at: directory)
+        store.flush()
+        XCTAssertNil(store.persistenceError)
+        let restored = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        XCTAssertEqual(restored.todayCharacters, 11)
+        XCTAssertEqual(restored.todayKeystrokes, 17)
+        XCTAssertTrue(store.resetStatistics())
+        XCTAssertEqual(store.todayCharacters, 0)
+    }
+
+    @MainActor
+    func testResetRefusesCorruptArchiveAndDemoDoesNotTouchExistingArchive() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("stats.json")
+        let original = Data("unreadable original history".utf8)
+        try original.write(to: file)
+        let store = StatisticsStore(directory: directory, calendar: calendar(), now: { self.date(13) })
+        store.record(bundleID: "app.keep", name: "Keep", characters: 8, at: date(13))
+        XCTAssertFalse(store.resetStatistics())
+        XCTAssertNotNil(store.persistenceError)
+        XCTAssertEqual(store.todayCharacters, 8)
+        XCTAssertEqual(try Data(contentsOf: file), original)
+
+        let demo = StatisticsStore(directory: directory, demo: true, calendar: calendar(), now: { self.date(13) })
+        demo.setDashboardVisible(true)
+        XCTAssertGreaterThan(demo.todayCharacters, 0)
+        XCTAssertTrue(demo.resetStatistics())
+        XCTAssertEqual(demo.todayCharacters, 0)
+        XCTAssertEqual(demo.snapshot.totalCharacters, 0)
+        XCTAssertTrue(demo.snapshot.applications.isEmpty)
+        demo.flush()
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        let absentDirectory = temporaryDirectory()
+        let isolatedDemo = StatisticsStore(directory: absentDirectory, demo: true)
+        XCTAssertTrue(isolatedDemo.resetStatistics())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: absentDirectory.path))
+    }
 }

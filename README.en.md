@@ -93,6 +93,8 @@ Counts remain **estimates**. Bounded text comparison reduces whole-span overcoun
 
 **Existing history is preserved.** Older records contain totals only, so previous overcounts cannot be reconstructed. The app does not automatically recalculate or clear them; the new logic applies only to input recorded after upgrading.
 
+To start over, choose **Settings → Local Data → Reset Statistics… (设置 → 本机数据 → 重置统计数据…)**, then confirm **Reset and Start Counting Again (重置并重新统计)**. This cannot be undone: it clears all dates of character, keystroke, and per-app history, plus mouse clicks, hourly activity, and key distributions. Permissions, launch-at-login, display, exclusions, and pause settings stay intact. You can first export typing history as CSV; it does not include keyboard/mouse distributions. Installing or updating the app does not reset statistics.
+
 **WeChat 4.1.11:** the tested version does not expose its input area through Accessibility, so TypeCount can record keystrokes but cannot reliably count its characters. Confirmed unreadable apps show **“仅按键”** (keystrokes only); unconfirmed text access shows **“—”**. Neither means that you typed zero characters.
 
 Further details and permission troubleshooting are available in the [technical notes](docs/TECHNICAL-NOTES.md#统计口径与准确性), currently in Chinese.

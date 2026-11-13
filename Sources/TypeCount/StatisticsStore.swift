@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 
 enum StatisticsPeriod: String, CaseIterable, Identifiable {
@@ -123,12 +124,13 @@ final class StatisticsStore: ObservableObject {
         calendar: Calendar = .current,
         now: @escaping () -> Date = { Date() },
         saveInterval: Duration = .seconds(5),
-        snapshotInterval: Duration = .milliseconds(500)
+        snapshotInterval: Duration = .milliseconds(500),
+        persistenceQueue: DispatchQueue? = nil
     ) {
         let resolvedDirectory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("TypeCount", isDirectory: true)
         self.directory = resolvedDirectory
-        self.writer = StatisticsFileWriter(directory: resolvedDirectory)
+        self.writer = StatisticsFileWriter(directory: resolvedDirectory, queue: persistenceQueue)
         self.isDemo = demo
         self.calendar = calendar
         self.now = now
@@ -226,6 +228,47 @@ final class StatisticsStore: ObservableObject {
         let error = writer.writeSynchronously(makePersistenceRequest())
         if error == nil { persistedRevision = revision }
         setPersistenceError(error)
+    }
+
+    /// A reset is committed only after the empty archive replaces all queued writes.
+    /// Settings stay in that archive, and a failed replacement leaves live history intact.
+    @discardableResult
+    func resetStatistics() -> Bool {
+        pendingSave?.cancel()
+        pendingSave = nil
+        pendingSnapshot?.cancel()
+        pendingSnapshot = nil
+        pendingWriteToken = nil // Fence completions already waiting for the main actor.
+
+        guard !persistenceBlocked else {
+            setPersistenceError("无法重置统计：本地统计文件无法读取，原文件和本次内存统计均已保留。请先导出 CSV 并处理原文件。")
+            scheduleSnapshot()
+            return false
+        }
+        if !isDemo {
+            let empty = PersistenceRequest(isPaused: isPaused, excludedBundleIDs: excludedBundleIDs.sorted(), recordsByDay: [:])
+            if let error = writer.writeSynchronously(empty) {
+                setPersistenceError("重置统计失败，现有统计已保留，可恢复保存后重试。\(error)")
+                markForPersistence()
+                scheduleSnapshot()
+                return false
+            }
+        }
+
+        recordsByDay.removeAll()
+        dailyTotals.removeAll()
+        revision &+= 1
+        persistedRevision = revision
+        snapshotDirty = true
+        _ = updateCurrentDay(reference: now())
+        if dashboardVisible {
+            rebuildSnapshotIfNeeded()
+        } else if snapshot != .empty {
+            snapshot = .empty
+        }
+        setPersistenceError(nil)
+        menuBarUpdates.send()
+        return true
     }
 
     private func scheduleSnapshot() {
@@ -425,9 +468,12 @@ private struct PersistenceRequest: Sendable {
 /// A single utility queue bounds concurrent copies and guarantees write ordering.
 private final class StatisticsFileWriter: Sendable {
     private let directory: URL
-    private let queue = DispatchQueue(label: "com.jonah.TypeCount.statistics", qos: .utility)
+    private let queue: DispatchQueue
 
-    init(directory: URL) { self.directory = directory }
+    init(directory: URL, queue: DispatchQueue? = nil) {
+        self.directory = directory
+        self.queue = queue ?? DispatchQueue(label: "com.jonah.TypeCount.statistics", qos: .utility)
+    }
 
     func write(_ request: PersistenceRequest, completion: @escaping @Sendable (String?) -> Void) {
         queue.async { [directory] in completion(Self.save(request, directory: directory)) }
@@ -438,6 +484,8 @@ private final class StatisticsFileWriter: Sendable {
     }
 
     private static func save(_ request: PersistenceRequest, directory: URL) -> String? {
+        let temporary = directory.appendingPathComponent(".stats-\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporary) }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -449,8 +497,15 @@ private final class StatisticsFileWriter: Sendable {
             // Compact JSON reduces bytes written; the version-1 schema remains unchanged.
             let data = try encoder.encode(payload)
             let fileURL = directory.appendingPathComponent("stats.json")
-            try data.write(to: fileURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+            guard FileManager.default.createFile(atPath: temporary.path, contents: data,
+                                                 attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            // Set private permissions before the atomic replacement, so an error
+            // cannot be reported after the previous archive has already been replaced.
+            guard rename(temporary.path, fileURL.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
             return nil
         } catch {
             return "统计数据保存失败：\(error.localizedDescription)"

@@ -198,6 +198,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func quitApp() { NSApp.terminate(nil) }
     @objc private func checkForUpdates() { updates.checkForUpdates() }
 
+    private func resetStatistics() -> Bool {
+        // End the old collection session before clearing either archive. This
+        // also discards pending IME drafts and scheduled samples, so they cannot
+        // be charged to the fresh history after the reset.
+        if !demo { monitor.stop() }
+        let inputCleared = store.resetStatistics()
+        let activityCleared = activity.resetStatistics()
+        if !demo { monitor.start() }
+        updateMenuBar()
+        guard inputCleared && activityCleared else {
+            let inputError = store.persistenceError
+            let activityError = activity.persistenceError
+            // Let SwiftUI dismiss its confirmation alert before presenting an
+            // error. Each store keeps its previous records when its write fails.
+            DispatchQueue.main.async { [weak self] in
+                guard self != nil else { return }
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "统计未能全部重置"
+                alert.informativeText = [
+                    inputCleared ? "输入统计已重置。" : "输入统计未能重置，原记录仍保留。\n\(inputError ?? "请稍后重试。")",
+                    activityCleared ? "键鼠活动已重置。" : "键鼠活动未能重置，原记录仍保留。\n\(activityError ?? "请稍后重试。")"
+                ].joined(separator: "\n\n")
+                alert.runModal()
+            }
+            return false
+        }
+        return true
+    }
+
     @objc private func showDashboard() {
         store.setDashboardVisible(true)
         launchAtLogin.refresh()
@@ -212,7 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 onOpenPrivacySettings: { [weak self] in self?.monitor.openPrivacySettings() },
                 onRefreshPermissions: { [weak self] in self?.monitor.refreshPermissions() },
                 onRestartApp: { [weak self] in self?.restartApp() },
-                onExport: { [weak self] in self?.exportStatistics() }
+                onExport: { [weak self] in self?.exportStatistics() },
+                onResetStatistics: { [weak self] in self?.resetStatistics() ?? false }
             )
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 620, height: 620),

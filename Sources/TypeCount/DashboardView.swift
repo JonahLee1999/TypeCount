@@ -12,6 +12,7 @@ struct DashboardView: View {
     let onRefreshPermissions: () -> Void
     let onRestartApp: () -> Void
     let onExport: () -> Void
+    let onResetStatistics: () -> Bool
 
     private enum StatisticsPane {
         case typing, activity
@@ -29,6 +30,8 @@ struct DashboardView: View {
     @State private var checkForUpdatesAfterSettingsDismiss = false
     @State private var showingCountInfo = false
     @State private var showingTrend = false
+    @State private var showingResetConfirmation = false
+    @State private var resetStatisticsSucceeded = false
     @State private var lastPermissionCheck: Date?
     @AppStorage("menuBarMetric") private var menuBarMetricRaw = MenuBarMetric.compactCharacters.rawValue
 
@@ -374,6 +377,15 @@ struct DashboardView: View {
                     Text("仅保存按日、按应用汇总的数量，不保存文字内容。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Button("导出统计为 CSV…", action: onExport)
+                    Button("重置统计数据…", role: .destructive) {
+                        resetStatisticsSucceeded = false
+                        showingResetConfirmation = true
+                    }
+                    .foregroundStyle(.red)
+                    if resetStatisticsSucceeded {
+                        Text(store.isDemo ? "示例统计已重置。" : "统计已重置，将从零开始记录。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -381,6 +393,16 @@ struct DashboardView: View {
         }
         .frame(width: 520, height: 560)
         .background(Color(NSColor.windowBackgroundColor))
+        .alert("重置全部统计数据？", isPresented: $showingResetConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("重置并重新统计", role: .destructive) {
+                resetStatisticsSucceeded = onResetStatistics()
+            }
+        } message: {
+            Text(store.isDemo
+                 ? "演示数据，仅清空示例。不会影响真实统计或任何设置。"
+                 : "将清空所有日期的估算字符、按键、各 App 记录，以及点击、小时和键位分布，从零开始。权限、开机自启、显示、排除和暂停设置会保留。历史无法恢复；输入历史可先导出 CSV。")
+        }
         .onAppear { launchAtLogin.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchAtLogin.refresh()
