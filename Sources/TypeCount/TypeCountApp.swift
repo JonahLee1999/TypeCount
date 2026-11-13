@@ -36,9 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         activity = ActivityStatisticsStore(demo: demo)
         monitor = InputMonitor(store: store, activity: activity)
         updates = UpdateController(isDemo: demo, onPrepareForInstallation: { [weak self] in
-            self?.monitor?.stop()
-            self?.store?.flush()
-            self?.activity?.flush()
+            self?.prepareForUpdateInstallation()
         }, onResumeAfterInstallationFailure: { [weak self] in
             self?.monitor?.start()
         })
@@ -81,6 +79,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store?.flush()
         activity?.flush()
         midnightTimer?.invalidate()
+    }
+
+    private func prepareForUpdateInstallation() {
+        monitor?.stop()
+        store?.flush()
+        activity?.flush()
+        // Updates can also start from the menu bar while Settings is open.
+        // A sheet blocks the installer's normal quit Apple event. End only
+        // our dashboard's sheet, then release its SwiftUI graph by closing it;
+        // Sparkle owns its separate update and installation windows.
+        guard let window = dashboard else { return }
+        if let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
+            sheet.orderOut(nil)
+        }
+        window.close()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

@@ -26,6 +26,7 @@ struct DashboardView: View {
 
     @State private var selectedPane: StatisticsPane = .typing
     @State private var showingSettings = false
+    @State private var checkForUpdatesAfterSettingsDismiss = false
     @State private var showingCountInfo = false
     @State private var showingTrend = false
     @State private var lastPermissionCheck: Date?
@@ -97,7 +98,7 @@ struct DashboardView: View {
         }
         .background(Color(NSColor.windowBackgroundColor))
         .frame(minWidth: 480, minHeight: 500)
-        .sheet(isPresented: $showingSettings) { settings }
+        .sheet(isPresented: $showingSettings, onDismiss: settingsDidDismiss) { settings }
         .onAppear { activity.setVisible(selectedPane == .activity) }
         .onChange(of: selectedPane) { _, pane in
             activity.setVisible(pane == .activity)
@@ -352,7 +353,12 @@ struct DashboardView: View {
                             Text("上次检查 \(date.formatted(.dateTime.month().day().hour().minute()))")
                                 .font(.system(size: 10)).foregroundStyle(.secondary)
                         }
-                        Button("检查更新…", action: updates.checkForUpdates)
+                        Button("检查更新…") {
+                            // Sparkle's installer asks the host to quit. Finish
+                            // dismissing our modal sheet before starting its UI.
+                            checkForUpdatesAfterSettingsDismiss = true
+                            showingSettings = false
+                        }
                             .disabled(!updates.canCheckForUpdates)
                     }
                     Toggle("自动检查新版本", isOn: Binding(
@@ -379,6 +385,12 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchAtLogin.refresh()
         }
+    }
+
+    private func settingsDidDismiss() {
+        guard checkForUpdatesAfterSettingsDismiss else { return }
+        checkForUpdatesAfterSettingsDismiss = false
+        updates.checkForUpdates()
     }
 
     private func permissionRow(_ title: String, detail: String, granted: Bool, action: @escaping () -> Void) -> some View {
