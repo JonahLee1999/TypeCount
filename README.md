@@ -13,7 +13,7 @@
 <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-F05138?style=flat-square" />
 <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/License-MIT-555555?style=flat-square" /></a>
 
-[**下载安装**](https://github.com/JonahLee1999/TypeCount/releases/latest) · [统计与实现](docs/TECHNICAL-NOTES.md) · [反馈问题](https://github.com/JonahLee1999/TypeCount/issues)
+[**下载安装**](https://github.com/JonahLee1999/TypeCount/releases/latest) · [统计与实现](docs/TECHNICAL-NOTES.md) · [更新与发布](docs/UPDATES.md) · [反馈问题](https://github.com/JonahLee1999/TypeCount/issues)
 
 中文 · [English](README.en.md)
 
@@ -21,7 +21,7 @@
 
 ## 少一点界面，多一点专注
 
-菜单栏只留一个紧凑数字，例如 `1.9k`。悬停看完整统计，点击查看明细；关闭窗口后继续在后台记录。
+菜单栏固定只占一个图标位：原图标保留在左下角，右上角用小字显示 `1.9k` 这样的紧凑数字。可选择字数、按键或鼠标点击角标，也可仅显示图标。悬停看完整统计，点击查看明细；关闭窗口后继续在后台记录。
 
 左上角的 **「输入统计 ˅」** 下拉菜单，在输入统计与键鼠活动之间原位切换。默认打开输入统计，两个视图共用日期范围。
 
@@ -42,12 +42,13 @@
 
 | 功能 | 你能看到什么 |
 | :--- | :--- |
-| 紧凑菜单栏 | 默认显示今日估算字符，支持仅图标、完整字数、按键或鼠标点击数 |
+| 图标与数字角标 | 固定一个图标位，选择今日估算字符、按键、鼠标点击，或仅图标；完整值在悬停提示中查看 |
 | 按 App 汇总 | 每个应用的估算新增字符与按键次数，区分文本不可读的应用 |
 | 键鼠活动 | 左右键点击、24 小时键盘分布、常用物理键位 |
 | 日期与趋势 | 今日、近 7 天、近 30 天；可展开最近 7 天字符趋势 |
 | 随时掌控 | 暂停、排除指定应用、导出输入统计 CSV、选择登录时启动 |
-| 原生与本地 | SwiftUI / AppKit，跟随系统明暗外观，无第三方运行依赖、无账号、无联网 |
+| 原生与本地 | SwiftUI / AppKit，跟随系统明暗外观，无账号，统计在本机处理与保存 |
+| 应用内更新 | 内置 Sparkle，手动检查 GitHub Releases；自动检查默认关闭，不自动下载更新 |
 
 ## 开始使用
 
@@ -64,6 +65,14 @@
 > 当前发布包使用本地开发证书签名，尚未经过 Apple Developer ID 签名及公证。其他 Mac 可能提示无法验证开发者。确认来源可信后，可按系统「设置 → 隐私与安全性」提供的「仍要打开」流程确认。受组织管理的设备可能不允许打开。详见 [Apple 的说明](https://developer.apple.com/news/?id=saqachfa)。
 
 需要自启时，在字迹设置中打开 **「登录时启动字迹」**。登录后只常驻菜单栏，不弹出主窗口。
+
+## 更新应用
+
+在应用中选择 **「检查更新…」**，即可通过 HTTPS 检查 GitHub Releases 上的新版本。更新使用 [Sparkle 2.10.1](https://sparkle-project.org/)；默认关闭自动检查和系统信息上报，不自动下载。你可以主动开启自动检查，下载与安装仍由你确认。
+
+确认安装后，更新器替换应用，并让字迹正常退出、重新启动；应用外部的统计文件和设置会保留。没有「检查更新」入口的旧版需要先从 [Releases](https://github.com/JonahLee1999/TypeCount/releases/latest) **手动安装一次含更新器的版本**，之后即可在 App 内更新。
+
+当前本地开发签名及未公证的限制仍然适用。更新不能保证避免系统安全确认或辅助功能重新授权。[更新机制与发布流程 →](docs/UPDATES.md)
 
 ## 数字代表什么？
 
@@ -84,7 +93,9 @@
 
 ## 留下数量，不留下文字
 
-所有统计保存在自己的 Mac 上。应用不保存输入原文、按键顺序、剪贴板、截图、鼠标位置或窗口标题，也不发送网络请求。
+所有统计保存在自己的 Mac 上。应用不保存输入原文、按键顺序、剪贴板、截图、鼠标位置或窗口标题，也不上传输入或统计数据。
+
+联网仅用于你手动检查更新、主动开启自动检查，以及确认下载更新时访问 GitHub 与其发布资产服务；不包含遥测，Sparkle 的系统信息上报默认关闭。日常统计无需联网。
 
 为估算字符，当前聚焦编辑框的文本会短暂保留在内存中，并在切换焦点、暂停、排除应用或停止监听时清除。系统安全输入和可识别的密码框会跳过；自绘且未标记的密码框无法统一识别，建议手动排除对应 App。
 
@@ -118,15 +129,18 @@ swift test                         # 核心算法、权限状态与存储测试
 open dist/TypeCount.app
 ```
 
-通用安装包与演示模式（打包 DMG 另需 Python 3.10+，首次安装构建依赖需要联网）：
+通用安装包与演示模式（打包 DMG 另需 Python 3.10+）：
 
 ```sh
 UNIVERSAL=1 ./scripts/build-app.sh  # arm64 + x86_64
 ./scripts/build-dmg.sh             # DMG 与 SHA-256 校验文件
+./scripts/build-update.sh          # 签名更新包与 appcast，写入 dist/updates/<版本>/
 open -n dist/TypeCount.app --args --demo
 ```
 
-演示模式使用内存中的示例数据，不监听输入、不写入真实统计。打包所需的 Python 依赖只安装到 `.build/dmg-tools`，不随 App 分发。
+首次 SwiftPM 解析需要联网下载 Sparkle 2.10.1，首次打包 DMG 也需要联网安装 Python 依赖。**Sparkle 是随 App 分发的第三方运行时依赖**（[第三方许可](THIRD-PARTY-NOTICES.md)）；DMG 工具的 Python 依赖只安装到 `.build/dmg-tools`，不随 App 分发。生成更新包另需发布者本机钥匙串中的更新签名密钥，详见 [发布流程](docs/UPDATES.md#发布流程)。
+
+演示模式使用内存中的示例数据，不监听输入、不写入真实统计。
 
 未配置签名身份时，构建脚本使用临时签名，重建可能需要重新授权。可用 `SIGN_IDENTITY` 或本机 `.signing-identity` 设置稳定身份；**不要提交证书、私钥或签名配置**。正式分发需自行完成 Developer ID 签名与 Apple 公证，普通构建脚本不会完成这一步。
 
@@ -136,7 +150,7 @@ open -n dist/TypeCount.app --args --demo
 
 [贡献指南](CONTRIBUTING.md) · [报告问题](https://github.com/JonahLee1999/TypeCount/issues/new/choose) · [实现与排查](docs/TECHNICAL-NOTES.md)
 
-感谢 [keyStats](https://github.com/debugtheworldbot/keyStats) 提供键鼠统计方面的功能参考。本项目使用公开系统 API 独立实现，保留对实际输入字符与按键次数的区分。
+感谢 [keyStats](https://github.com/debugtheworldbot/keyStats) 提供键鼠统计方面的功能参考。本项目使用公开系统 API 独立实现，保留对实际输入字符与按键次数的区分。应用内更新由 [Sparkle](https://sparkle-project.org/) 提供。
 
 ---
 

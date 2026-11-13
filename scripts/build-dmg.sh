@@ -25,7 +25,7 @@ fi
 
 TYPECOUNT_STAGE="$(mktemp -d "$TYPECOUNT_ROOT/.build/dmg-stage.XXXXXX")"
 trap 'rm -rf "$TYPECOUNT_STAGE"' EXIT
-TYPECOUNT_DMG="$TYPECOUNT_ROOT/dist/字迹-${TYPECOUNT_VERSION}-macOS-universal.dmg"
+TYPECOUNT_DMG="$TYPECOUNT_ROOT/dist/TypeCount-${TYPECOUNT_VERSION}-macOS-universal.dmg"
 ditto "$TYPECOUNT_SOURCE" "$TYPECOUNT_STAGE/字迹.app"
 ln -s /Applications "$TYPECOUNT_STAGE/Applications"
 cat > "$TYPECOUNT_STAGE/安装说明.txt" <<EOF
@@ -47,13 +47,15 @@ cat > "$TYPECOUNT_STAGE/安装说明.txt" <<EOF
 Apple 说明：https://developer.apple.com/news/?id=saqachfa
 
 统计与隐私
-菜单栏默认显示紧凑字数（如 1.9k），悬停可看完整统计，点击查看各 App 明细。
-设置中可选仅图标或其他计数，并可主动开启「登录时启动字迹」。
+菜单栏默认显示图标，右上角小字展示今日字数（如 1.9k），整体仅占一个图标位置。
+悬停可看完整统计，点击查看各 App 明细。设置中可选其他角标或仅图标，并可开启「登录时启动字迹」。
 主窗口左上角使用下拉箭头切换「输入统计」和「键鼠活动」，默认展示输入统计。
 键鼠活动提供左右点击、小时分布和常用键位。
 中文、英文字母和标点按字符统计，忽略空白；删除不扣回累计量。
 中文输入法、自动更正和部分编辑器可能存在误差；未提供输入文本的 App 显示「仅按键」。
-统计数据仅保存在接收者自己的 Mac，不保存输入原文，也不联网。
+统计数据仅保存在接收者自己的 Mac，不保存输入原文。
+「检查更新」通过 GitHub Releases 获取签名版本列表与更新包，安装后重新启动字迹。
+自动检查默认关闭；不上传输入数据，不启用系统画像，安装包替换不删除现有统计。
 本安装包不包含开发者的个人统计数据、私钥或签名配置。
 EOF
 "$TYPECOUNT_PYTHON" scripts/dmg-layout.py "$TYPECOUNT_STAGE"

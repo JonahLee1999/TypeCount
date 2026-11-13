@@ -5,7 +5,6 @@ import SwiftUI
 enum MenuBarMetric: String, CaseIterable, Identifiable {
     case compactCharacters
     case iconOnly
-    case characters
     case keystrokes
     case mouseClicks
 
@@ -13,11 +12,10 @@ enum MenuBarMetric: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .compactCharacters: "紧凑字数（推荐）"
+        case .compactCharacters: "图标与字数（推荐）"
         case .iconOnly: "仅图标"
-        case .characters: "字数"
-        case .keystrokes: "按键"
-        case .mouseClicks: "鼠标点击"
+        case .keystrokes: "图标与按键"
+        case .mouseClicks: "图标与鼠标点击"
         }
     }
 }

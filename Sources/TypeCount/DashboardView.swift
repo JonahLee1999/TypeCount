@@ -5,6 +5,7 @@ struct DashboardView: View {
     @ObservedObject var store: StatisticsStore
     @ObservedObject var launchAtLogin: LaunchAtLoginController
     @ObservedObject var activity: ActivityStatisticsStore
+    @ObservedObject var updates: UpdateController
     let onRequestInputPermission: () -> Void
     let onRequestAccessibilityPermission: () -> Void
     let onOpenPrivacySettings: () -> Void
@@ -128,6 +129,9 @@ struct DashboardView: View {
             Button { showingSettings = true } label: { Image(systemName: "gearshape") }
                 .help("设置").accessibilityLabel("设置")
             Menu {
+                Button("检查更新…", action: updates.checkForUpdates)
+                    .disabled(!updates.canCheckForUpdates)
+                Divider()
                 Button("导出统计为 CSV…", action: onExport)
                 Divider()
                 Button("重新检查权限", action: refreshPermissions)
@@ -285,7 +289,7 @@ struct DashboardView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    Text("紧凑模式只显示缩写数字（如 1.9k），悬停查看完整数值，点击查看详情。")
+                    Text("图标右上角显示缩写数字（如 1.9k），始终只占一个图标位置。悬停查看完整数值，点击查看详情。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Section("统计") {
@@ -337,6 +341,28 @@ struct DashboardView: View {
                     Text("排除应用")
                 } footer: {
                     Text("开启开关后，该应用不再新增统计，已有记录仍会保留。")
+                }
+                Section("更新") {
+                    LabeledContent("当前版本", value: updates.currentVersion)
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(updates.status)
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let date = updates.lastCheckDate {
+                            Text("上次检查 \(date.formatted(.dateTime.month().day().hour().minute()))")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                        Button("检查更新…", action: updates.checkForUpdates)
+                            .disabled(!updates.canCheckForUpdates)
+                    }
+                    Toggle("自动检查新版本", isOn: Binding(
+                        get: { updates.automaticallyChecksForUpdates },
+                        set: { updates.setAutomaticallyChecksForUpdates($0) }
+                    ))
+                    .disabled(!updates.isAvailable)
+                    Text("检查更新会连接 GitHub。自动检查默认关闭，下载和安装由你确认，不上传输入内容或统计记录。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Section("本机数据") {
                     Text("仅保存按日、按应用汇总的数量，不保存文字内容。")

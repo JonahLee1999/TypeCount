@@ -15,3 +15,5 @@ __pycache__/
 *.pem
 /stats.json
 /activity.json
+*.ed25519
+*.private

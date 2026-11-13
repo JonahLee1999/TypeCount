@@ -20,11 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var activity: ActivityStatisticsStore!
     private let launchAtLogin = LaunchAtLoginController()
     private var monitor: InputMonitor!
+    private var updates: UpdateController!
     private var statusItem: NSStatusItem!
     private var dashboard: NSWindow?
     private var subscriptions: Set<AnyCancellable> = []
     private var midnightTimer: Timer?
-    private var lastMenuTitle: String?
+    private var lastMenuBadge: String?
     private var lastMenuPaused: Bool?
     private var lastMenuMetric: MenuBarMetric?
     private var activityWasVisibleBeforeHiding = false
@@ -34,9 +35,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store = StatisticsStore(demo: demo)
         activity = ActivityStatisticsStore(demo: demo)
         monitor = InputMonitor(store: store, activity: activity)
+        updates = UpdateController(isDemo: demo, onPrepareForInstallation: { [weak self] in
+            self?.monitor?.stop()
+            self?.store?.flush()
+            self?.activity?.flush()
+        }, onResumeAfterInstallationFailure: { [weak self] in
+            self?.monitor?.start()
+        })
         if !demo && !UserDefaults.standard.bool(forKey: "compactMenuBarDefaultV1") {
             UserDefaults.standard.set("compactCharacters", forKey: "menuBarMetric")
             UserDefaults.standard.set(true, forKey: "compactMenuBarDefaultV1")
+        }
+        if !demo && UserDefaults.standard.string(forKey: "menuBarMetric") == "characters" {
+            UserDefaults.standard.set("compactCharacters", forKey: "menuBarMetric")
         }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
@@ -56,11 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &subscriptions)
         scheduleMidnightRefresh()
         if !demo { monitor.start() }
+        updates.start()
         updateMenuBar()
         let event = NSAppleEventManager.shared().currentAppleEvent
         let loginLaunch = event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
             || event?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))?.booleanValue == true
-        if !loginLaunch && !ProcessInfo.processInfo.arguments.contains("--background") { showDashboard() }
+        let updateRelaunch = UpdateController.consumeBackgroundRelaunch()
+        if !loginLaunch && !updateRelaunch && !ProcessInfo.processInfo.arguments.contains("--background") { showDashboard() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -123,42 +136,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateMenuBar() {
         guard let store, let button = statusItem?.button else { return }
         let metric = MenuBarMetric(rawValue: UserDefaults.standard.string(forKey: "menuBarMetric") ?? "") ?? .compactCharacters
-        let title: String
+        let badge: String?
         switch metric {
-        case .compactCharacters: title = MenuBarFormatting.compactCount(store.todayCharacters)
-        case .iconOnly: title = ""
-        case .characters: title = "  ≈\(store.todayCharacters.formatted()) 字"
-        case .keystrokes: title = "  \(store.todayKeystrokes.formatted()) 次"
-        case .mouseClicks: title = "  \(activity.todayMouseClicks.formatted()) 点击"
+        case .compactCharacters: badge = MenuBarFormatting.compactCount(store.todayCharacters)
+        case .iconOnly: badge = nil
+        case .keystrokes: badge = MenuBarFormatting.compactCount(store.todayKeystrokes)
+        case .mouseClicks: badge = MenuBarFormatting.compactCount(activity.todayMouseClicks)
         }
-        let displayedTitle = metric == .iconOnly ? "" : (store.isPaused ? (metric == .compactCharacters ? "Ⅱ" : "  已暂停") : title)
-        if lastMenuMetric != metric {
-            statusItem.length = metric == .iconOnly ? NSStatusItem.squareLength : NSStatusItem.variableLength
-        }
-        if lastMenuTitle != displayedTitle {
-            lastMenuTitle = displayedTitle
-            button.title = displayedTitle
-        }
-        if lastMenuPaused != store.isPaused || lastMenuMetric != metric {
+        // All display choices have the same fixed footprint. Only regenerate
+        // when the visible abbreviation changes, rather than on every key.
+        if lastMenuBadge != badge || lastMenuPaused != store.isPaused || lastMenuMetric != metric {
+            lastMenuBadge = badge
             lastMenuPaused = store.isPaused
             lastMenuMetric = metric
-            let image = metric == .compactCharacters ? nil : NSImage(systemSymbolName: store.isPaused ? "pause" : "text.alignleft", accessibilityDescription: "字迹输入统计")
-            image?.isTemplate = true
-            image?.size = NSSize(width: 16, height: 16)
-            button.image = image
-            button.imagePosition = metric == .compactCharacters ? .noImage : (metric == .iconOnly ? .imageOnly : .imageLeading)
+            button.title = ""
+            button.image = MenuBarIcon.image(badge: badge, paused: store.isPaused)
+            button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
         }
+        button.setAccessibilityLabel("字迹\(store.isPaused ? "，已暂停" : "")，今日估算字符 \(store.todayCharacters.formatted())，按键 \(store.todayKeystrokes.formatted())，鼠标点击 \(activity.todayMouseClicks.formatted())")
         button.toolTip = "字迹\(store.isPaused ? " · 已暂停" : "")\n今日字符：≈\(store.todayCharacters.formatted())\n按键：\(store.todayKeystrokes.formatted()) 次 · 鼠标：\(activity.todayMouseClicks.formatted()) 次\n点击查看详情，右键打开菜单"
     }
 
     @objc private func statusItemClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
+            menu.autoenablesItems = false
             let open = menu.addItem(withTitle: "打开统计主页", action: #selector(showDashboard), keyEquivalent: "")
             open.target = self
             let pause = menu.addItem(withTitle: store.isPaused ? "继续统计" : "暂停统计", action: #selector(togglePause), keyEquivalent: "")
             pause.target = self
+            let check = menu.addItem(withTitle: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+            check.target = self
+            check.isEnabled = updates.canCheckForUpdates
             menu.addItem(.separator())
             let quit = menu.addItem(withTitle: "退出字迹", action: #selector(quitApp), keyEquivalent: "q")
             quit.target = self
@@ -172,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func togglePause() { store.isPaused.toggle() }
     @objc private func quitApp() { NSApp.terminate(nil) }
+    @objc private func checkForUpdates() { updates.checkForUpdates() }
 
     @objc private func showDashboard() {
         store.setDashboardVisible(true)
@@ -181,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 store: store,
                 launchAtLogin: launchAtLogin,
                 activity: activity,
+                updates: updates,
                 onRequestInputPermission: { [weak self] in self?.monitor.requestInputPermission() },
                 onRequestAccessibilityPermission: { [weak self] in self?.monitor.requestAccessibilityPermission() },
                 onOpenPrivacySettings: { [weak self] in self?.monitor.openPrivacySettings() },

@@ -44,13 +44,41 @@ else
     TYPECOUNT_BIN_DIR="$(swift build -c release --show-bin-path)"
 fi
 
+TYPECOUNT_SPARKLE_ARTIFACT="$TYPECOUNT_ROOT/.build/artifacts/sparkle/Sparkle"
+TYPECOUNT_SPARKLE_SOURCE="$TYPECOUNT_SPARKLE_ARTIFACT/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [ ! -d "$TYPECOUNT_SPARKLE_SOURCE" ] || [ ! -f "$TYPECOUNT_SPARKLE_ARTIFACT/LICENSE" ]; then
+    printf 'Missing resolved Sparkle framework or license at %s\nRun swift package resolve and retry.\n' "$TYPECOUNT_SPARKLE_ARTIFACT" >&2
+    exit 1
+fi
+
 TYPECOUNT_APP="$TYPECOUNT_ROOT/dist/TypeCount.app"
-mkdir -p "$TYPECOUNT_APP/Contents/MacOS" "$TYPECOUNT_APP/Contents/Resources"
+TYPECOUNT_SPARKLE="$TYPECOUNT_APP/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$TYPECOUNT_APP/Contents/MacOS" "$TYPECOUNT_APP/Contents/Resources" "$TYPECOUNT_APP/Contents/Frameworks"
 cp "$TYPECOUNT_BIN_DIR/TypeCount" "$TYPECOUNT_APP/Contents/MacOS/TypeCount"
 cp Resources/Info.plist "$TYPECOUNT_APP/Contents/Info.plist"
 cp "$TYPECOUNT_ICON" "$TYPECOUNT_APP/Contents/Resources/AppIcon.icns"
+cp "$TYPECOUNT_SPARKLE_ARTIFACT/LICENSE" "$TYPECOUNT_APP/Contents/Resources/Sparkle-LICENSE.txt"
+# Copy the complete official framework, including its versioned symlinks and helpers.
+# Remove only the prior generated framework to avoid retaining files from an older version.
+rm -rf "$TYPECOUNT_SPARKLE"
+ditto "$TYPECOUNT_SPARKLE_SOURCE" "$TYPECOUNT_SPARKLE"
 chmod +x "$TYPECOUNT_APP/Contents/MacOS/TypeCount"
+
+# Manual packaging must re-sign Sparkle from the inside out. The Downloader's
+# entitlements must be preserved; --deep is deliberately not used for signing.
+# https://sparkle-project.org/documentation/sandboxing/#code-signing
+TYPECOUNT_SPARKLE_VERSION="$TYPECOUNT_SPARKLE/Versions/Current"
+codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none --options runtime \
+    "$TYPECOUNT_SPARKLE_VERSION/XPCServices/Installer.xpc"
+codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none --options runtime \
+    --preserve-metadata=entitlements "$TYPECOUNT_SPARKLE_VERSION/XPCServices/Downloader.xpc"
+codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none --options runtime \
+    "$TYPECOUNT_SPARKLE_VERSION/Autoupdate"
+codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none --options runtime \
+    "$TYPECOUNT_SPARKLE_VERSION/Updater.app"
+codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none --options runtime "$TYPECOUNT_SPARKLE"
 # Local signing only; a distribution release also needs Developer ID and notarization.
+# Keep the host's existing local signing identity and do not enable library validation.
 codesign --force --sign "$TYPECOUNT_SIGN_IDENTITY" --timestamp=none "$TYPECOUNT_APP"
-codesign --verify --strict "$TYPECOUNT_APP"
+codesign --verify --deep --strict "$TYPECOUNT_APP"
 printf '\nBuilt %s\n' "$TYPECOUNT_APP"

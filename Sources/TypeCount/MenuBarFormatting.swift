@@ -6,7 +6,9 @@ enum MenuBarFormatting {
         let value = max(0, count)
         if value < 1_000 { return String(value) }
         if value < 1_000_000 { return abbreviated(value, divisor: 1_000, suffix: "k") }
-        return abbreviated(value, divisor: 1_000_000, suffix: "m")
+        if value < 1_000_000_000 { return abbreviated(value, divisor: 1_000_000, suffix: "m") }
+        if value < 1_000_000_000_000 { return abbreviated(value, divisor: 1_000_000_000, suffix: "b") }
+        return "1t+"
     }
 
     private static func abbreviated(_ value: Int, divisor: Int, suffix: String) -> String {
