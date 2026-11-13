@@ -1,0 +1,30 @@
+name: 功能建议
+description: 描述希望字迹解决的具体问题。
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: 请说明使用场景与期望行为，示例使用虚构内容，不要附真实输入或个人统计文件。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题
+      description: 你在什么场景遇到困难？当前行为有什么不足？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的功能或行为
+      description: 描述具体结果；有示意图时请先脱敏。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已尝试的替代方案（可选）
+  - type: input
+    id: environment
+    attributes:
+      label: 相关环境（可选）
+      description: 如果建议涉及兼容性，请注明 macOS、目标 App 或输入法版本。

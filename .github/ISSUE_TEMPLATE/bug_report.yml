@@ -1,0 +1,71 @@
+name: 问题反馈
+description: 反馈计数、权限、兼容性或界面问题。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请用虚构内容复现。不要上传真实输入、聊天记录、统计文件、CSV、账号信息、证书或私钥；截图和日志请先脱敏。
+  - type: input
+    id: app_version
+    attributes:
+      label: 字迹版本
+      placeholder: 例如 0.x.x，或源码提交版本
+    validations:
+      required: true
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS 版本
+      placeholder: 例如 macOS 15.6.1
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: 芯片类型
+      options:
+        - Apple Silicon（M 系列）
+        - Intel
+        - 不确定
+    validations:
+      required: true
+  - type: input
+    id: affected_app
+    attributes:
+      label: 相关 App 与输入法
+      description: 字符统计问题请注明目标 App 版本、输入法名称及版本。
+      placeholder: 例如 TextEdit，系统简体拼音
+  - type: dropdown
+    id: permission_state
+    attributes:
+      label: 当前授权状态
+      options:
+        - 辅助功能已开启
+        - 仅输入监控已开启
+        - 未开启或不确定
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最短复现步骤
+      description: 请注明输入、删除、粘贴或切换 App 的操作；只使用虚构文本。
+      placeholder: |
+        1. 打开 TextEdit 并新建空白文档。
+        2. 输入 hello。
+        3. 查看字迹里的该 App 计数。
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 预期结果与实际结果
+      description: 请区分按键次数和估算字符数；权限问题请描述系统开关与字迹检测状态。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏截图或诊断信息（可选）
+      description: AX 诊断只需属性名、类型、长度或错误码，不要附属性文本。不要上传 stats.json、activity.json 或统计 CSV。

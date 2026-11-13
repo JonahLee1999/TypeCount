@@ -1,0 +1,17 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+*.xcuserstate
+.signing-identity
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+*.p12
+*.pfx
+*.key
+*.pem
+/stats.json
+/activity.json
